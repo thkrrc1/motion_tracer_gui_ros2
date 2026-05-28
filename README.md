@@ -1,0 +1,2 @@
+# motion_tracer_gui_ros2
+pythonのCustomTkinterを使用した簡易的なGUI
