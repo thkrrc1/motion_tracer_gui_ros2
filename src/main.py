@@ -26,7 +26,7 @@ class ImageSubscriber(Node):
 
         self.create_subscription(
             RosImage,
-            '/camera2/image_raw/compressed',
+            '/camera1/image_raw/compressed',
             lambda msg: self.image_callback(msg, "camera1"),
             qos_profile_sensor_data
         )
@@ -40,7 +40,7 @@ class ImageSubscriber(Node):
 
         self.create_subscription(
             RosImage,
-            '/camera2/image_raw/compressed',
+            '/camera3/image_raw/compressed',
             lambda msg: self.image_callback(msg, "camera3"),
             qos_profile_sensor_data
         )
@@ -75,16 +75,18 @@ class ImageGUI(ctk.CTk):
         self.main_frame = ctk.CTkFrame(self)
         self.main_frame.pack(fill="both", expand=True)
 
-        self.view_frame = ctk.CTkFrame(self.main_frame)
-        self.view_frame.pack(side=ctk.TOP)
+        #-----------------------------------------------------------------------------------------
 
-        for i, cam in enumerate(["camera1", "camera2", "camera3"]):
-            image_frame = ctk.CTkFrame(self.view_frame)
-            image_frame.grid(row=0, column=i)
+        # self.view_frame = ctk.CTkFrame(self.main_frame)
+        # self.view_frame.pack(side=ctk.TOP)
 
-            label = ctk.CTkLabel(image_frame, text=f"/{cam}/image_raw/compressed\nWaiting for image...")
-            label.pack(padx=1)
-            self.labels[cam] = label
+        # for i, cam in enumerate(["camera1", "camera2", "camera3"]):
+        #     image_frame = ctk.CTkFrame(self.view_frame)
+        #     image_frame.grid(row=0, column=i)
+
+        #     label = ctk.CTkLabel(image_frame, text=f"/{cam}/image_raw/compressed\nWaiting for image...")
+        #     label.pack(padx=1)
+        #     self.labels[cam] = label
 
         #-----------------------------------------------------------------------------------------
 
@@ -117,32 +119,32 @@ class ImageGUI(ctk.CTk):
 
         #-----------------------------------------------------------------------------------------
 
-        # self.head_view_frame = ctk.CTkFrame(self.main_frame)
-        # self.head_view_frame.pack(side=ctk.TOP)
+        self.head_view_frame = ctk.CTkFrame(self.main_frame)
+        self.head_view_frame.pack(side=ctk.TOP)
 
-        # head_image_frame = ctk.CTkFrame(self.head_view_frame)
-        # head_image_frame.grid(row=0, column=0)
+        head_image_frame = ctk.CTkFrame(self.head_view_frame)
+        head_image_frame.grid(row=0, column=0)
 
-        # head_label = ctk.CTkLabel(head_image_frame, text="/camera1/image_raw/compressed\nWaiting for image...")
-        # head_label.pack(padx=1)
-        # self.labels["camera1"] = head_label
+        head_label = ctk.CTkLabel(head_image_frame, text="/camera1/image_raw/compressed\nWaiting for image...")
+        head_label.pack(padx=1)
+        self.labels["camera1"] = head_label
 
-        # self.arm_view_frame = ctk.CTkFrame(self.main_frame)
-        # self.arm_view_frame.pack(side=ctk.TOP)
+        self.arm_view_frame = ctk.CTkFrame(self.main_frame)
+        self.arm_view_frame.pack(side=ctk.TOP)
 
-        # left_image_frame = ctk.CTkFrame(self.head_view_frame)
-        # left_image_frame.grid(row=0, column=1)
+        left_image_frame = ctk.CTkFrame(self.head_view_frame)
+        left_image_frame.grid(row=0, column=1)
 
-        # left_label = ctk.CTkLabel(left_image_frame, text="/camera2/image_raw/compressed\nWaiting for image...")
-        # left_label.pack(padx=1)
-        # self.labels["camera2"] = left_label
+        left_label = ctk.CTkLabel(left_image_frame, text="/camera2/image_raw/compressed\nWaiting for image...")
+        left_label.pack(padx=1)
+        self.labels["camera2"] = left_label
 
-        # right_image_frame = ctk.CTkFrame(self.head_view_frame)
-        # right_image_frame.grid(row=1, column=0)
+        right_image_frame = ctk.CTkFrame(self.head_view_frame)
+        right_image_frame.grid(row=1, column=0)
 
-        # right_label = ctk.CTkLabel(right_image_frame, text="/camera3/image_raw/compressed\nWaiting for image...")
-        # right_label.pack(padx=1)
-        # self.labels["camera3"] = right_label
+        right_label = ctk.CTkLabel(right_image_frame, text="/camera3/image_raw/compressed\nWaiting for image...")
+        right_label.pack(padx=1)
+        self.labels["camera3"] = right_label
 
         #-----------------------------------------------------------------------------------------
 
@@ -173,9 +175,9 @@ class ImageGUI(ctk.CTk):
 
     def cv_to_tk(self, cv_img):
         rgb = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
-        rgb = cv2.resize(rgb, (638, 800))
+        # rgb = cv2.resize(rgb, (638, 800))
         # rgb = cv2.resize(rgb, (588, 440))
-        # rgb = cv2.resize(rgb, (960, 512))
+        rgb = cv2.resize(rgb, (960, 512))
 
         pil_img = Image.fromarray(rgb)
 
