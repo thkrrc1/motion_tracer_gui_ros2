@@ -234,7 +234,7 @@ class ImageGUI(ctk.CTk):
                 "bash",
                 "-lc",
                 "source /opt/ros/jazzy/setup.bash && "
-                "source /home/seed/ros2_ws/install/setup.bash && "
+                "source /home/seed/ros2/jazzy/install/setup.bash && "
                 "ros2 launch motion_tracer_ros2 tracer_bringup.launch.py"
             ],
             preexec_fn=os.setsid
