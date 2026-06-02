@@ -68,6 +68,7 @@ class ImageGUI(ctk.CTk):
 
         self.node = ros_node
 
+        self.robot_process = None
         self.tracer_process = None
 
         self.title("MotionTracerGUI ROS2")
@@ -188,6 +189,29 @@ class ImageGUI(ctk.CTk):
     def start_robot_bringup(self):
         print("ロボット起動しました")
 
+        if self.robot_process is not None:
+            print("Robotは既に起動中です")
+            return
+
+        #SSHパスワード暫定対応
+        self.robot_process = subprocess.Popen(
+            [
+                "gnome-terminal",
+                "--",
+                "bash",
+                "-lc",
+                (
+                    "sshpass -p 'seed' "
+                    "ssh -o StrictHostKeyChecking=no "
+                    "seed@192.168.0.50 "
+                    "'source /opt/ros/jazzy/setup.bash && "
+                    "source ~/ros2/jazzy/install/setup.bash && "
+                    "ros2 launch motion_tracer_ros2 robot_bringup.launch.py simulation:=false'"
+                )
+            ],
+            preexec_fn=os.setsid
+        )
+
     def on_tracer_bringup_click(self):
         print("トレーサー起動ボタンがクリックされました")
 
@@ -229,10 +253,34 @@ class ImageGUI(ctk.CTk):
 
         subprocess.run(
             [
-                "pkill",
+                "killall",
                 "-SIGINT",
-                "-f",
                 "ros2"
+            ]
+        )
+        #SSHパスワード暫定対応
+        subprocess.run(
+            [
+                "sshpass",
+                "-p",
+                "seed",
+                "ssh",
+                "-o",
+                "StrictHostKeyChecking=no",
+                "seed@192.168.0.50",
+                "killall -SIGINT "
+                "ros2 "
+                "ros2_control_node "
+                "robot_state_publisher "
+                "rviz2 urg_node2_node "
+                "scan_to_scan_filter_chain "
+                "init_pose_pub "
+                "static_transform_publisher "
+                "component_container "
+                "joy_linux_node "
+                "upper_controller_node "
+                "lower_controller_node "
+                "move_group"
             ]
         )
         time.sleep(1)
@@ -240,10 +288,18 @@ class ImageGUI(ctk.CTk):
         if self.tracer_process is not None:
             try:
                 self.tracer_process.terminate()
-                self.tracer_process.wait(timeout=3)
+                self.tracer_process.wait(timeout=1)
             except subprocess.TimeoutExpired:
                 self.tracer_process.kill()
             self.tracer_process = None
+
+        if self.robot_process is not None:
+            try:
+                self.robot_process.terminate()
+                self.robot_process.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                self.robot_process.kill()
+            self.robot_process = None
 
     def cv_to_tk(self, cv_img):
         rgb = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
