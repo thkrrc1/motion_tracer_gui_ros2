@@ -11,6 +11,7 @@ from rclpy.node import Node
 from sensor_msgs.msg import CompressedImage as RosImage
 import numpy as np
 from rclpy.qos import qos_profile_sensor_data
+from rclpy.executors import ExternalShutdownException
 
 import subprocess
 import os
@@ -78,6 +79,8 @@ class ImageGUI(ctk.CTk):
         ctk.set_default_color_theme("blue")
 
         self.labels = {}
+        self.left_current_percent = 30
+        self.right_current_percent = 30
 
         self.main_frame = ctk.CTkFrame(self)
         self.main_frame.pack(fill="both", expand=True)
@@ -151,11 +154,9 @@ class ImageGUI(ctk.CTk):
 
         control_frame = ctk.CTkFrame(self.main_frame, width=960, height=540)
         control_frame.grid(row=1, column=1)
-        # control_frame.grid_propagate(False)
 
         control_button_frame = ctk.CTkFrame(control_frame, width=960, height=270)
-        control_button_frame.pack(side=ctk.TOP, pady=(0, 50))
-        # control_button_frame.pack_propagate(False)
+        control_button_frame.pack(side=ctk.TOP, pady=(0, 100))
 
         robot_bringup_button = ctk.CTkButton(control_button_frame, text="Robot Bring Up", width=150, height=150, command=self.on_robot_bringup_click)
         robot_bringup_button.grid(row=0, column=0, padx=10, pady=0)
@@ -166,33 +167,35 @@ class ImageGUI(ctk.CTk):
         finish_button = ctk.CTkButton(control_button_frame, text="All Finish", width=150, height=150, command=self.on_finish_click)
         finish_button.grid(row=0, column=2, padx=10, pady=0)
 
-        control_slider_frame = ctk.CTkFrame(control_frame, width=960, height=270)
+        control_slider_frame = ctk.CTkFrame(control_frame)
         control_slider_frame.pack(side=ctk.BOTTOM)
 
-        grip_current_slider = ctk.CTkSlider(control_slider_frame, from_=1, to=100, number_of_steps=99, command=self.on_slider_change)
-        grip_current_slider.set(30)
-        grip_current_slider.pack()
+        self.left_hand_current_label = ctk.CTkLabel(control_slider_frame, text=f" Left Hand Current : {self.left_current_percent} [%] ")
+        self.left_hand_current_label.grid(row=0, column=0, padx=10)
+        self.left_hand_current_slider = ctk.CTkSlider(control_slider_frame, from_=1, to=100, number_of_steps=99, command=self.on_left_slider_change)
+        self.left_hand_current_slider.set(30)
+        self.left_hand_current_slider.grid(row=1, column=0, padx=10)
+        self.left_hand_current_slider.bind("<ButtonRelease-1>", self.on_left_slider_release)
 
-        self.after(1000, lambda: print(control_frame.winfo_height()))
+        self.right_hand_current_label = ctk.CTkLabel(control_slider_frame, text=f" Right Hand Current : {self.right_current_percent} [%] ")
+        self.right_hand_current_label.grid(row=0, column=1, padx=10)
+        self.right_hand_current_slider = ctk.CTkSlider(control_slider_frame, from_=1, to=100, number_of_steps=99, command=self.on_right_slider_change)
+        self.right_hand_current_slider.set(30)
+        self.right_hand_current_slider.grid(row=1, column=1, padx=10)
+        self.right_hand_current_slider.bind("<ButtonRelease-1>", self.on_right_slider_release)
 
         self.update_images()
 
         self.protocol("WM_DELETE_WINDOW", self.on_close)
     
     def on_robot_bringup_click(self):
-        print("ロボット起動ボタンがクリックされました")
         threading.Thread(
             target=self.start_robot_bringup,
             daemon=True
         ).start()
+        print("Clicked Robot Bring Up Button")
 
     def start_robot_bringup(self):
-        print("ロボット起動しました")
-
-        if self.robot_process is not None:
-            print("Robotは既に起動中です")
-            return
-
         #SSHパスワード暫定対応
         self.robot_process = subprocess.Popen(
             [
@@ -211,22 +214,18 @@ class ImageGUI(ctk.CTk):
             ],
             preexec_fn=os.setsid
         )
+        self.on_left_slider_change(self.left_current_percent)
+        self.on_right_slider_change(self.right_current_percent)
+        print("Robot System Bring Up")
 
     def on_tracer_bringup_click(self):
-        print("トレーサー起動ボタンがクリックされました")
-
         threading.Thread(
             target=self.start_tracer_bringup,
             daemon=True
         ).start()
+        print("Clicked Tracer Bring Up Button")
 
     def start_tracer_bringup(self):
-        print("トレーサー起動しました")
-
-        if self.tracer_process is not None:
-            print("Tracerは既に起動中です")
-            return
-
         self.tracer_process = subprocess.Popen(
             [
                 "gnome-terminal",
@@ -239,18 +238,16 @@ class ImageGUI(ctk.CTk):
             ],
             preexec_fn=os.setsid
         )
+        print("Tracer System Bring Up")
 
     def on_finish_click(self):
-        print("終了ボタンがクリックされました")
-
         threading.Thread(
             target=self.finish_all,
             daemon=True
         ).start()
+        print("Clicked All Finish Button")
 
     def finish_all(self):
-        print("全システム停止")
-
         subprocess.run(
             [
                 "killall",
@@ -301,6 +298,70 @@ class ImageGUI(ctk.CTk):
                 self.robot_process.kill()
             self.robot_process = None
 
+        print("All System Finished")
+
+    def on_left_slider_change(self, slider_value):
+        self.left_current_percent = round(slider_value)
+        self.left_hand_current_label.configure(text=f" Left Hand Current : {self.left_current_percent} [%] ")
+
+    def on_left_slider_release(self, event):
+        threading.Thread(
+            target=self.call_left_hand_current_service,
+            args=(self.left_current_percent,),
+            daemon=True
+        ).start()
+
+    def call_left_hand_current_service(self, current_value):
+        try:
+            subprocess.run(
+                [
+                    "ros2",
+                    "service",
+                    "call",
+                    "/aero_controller/set_current",
+                    "aero_controller_msgs/srv/SetCurrent",
+                    (
+                        "{joint_name: ['l_thumb_joint'], "
+                        f"max: [{int(current_value)}], "
+                        "min: [1]}"
+                    )
+                ],
+                check=True
+            )
+        except Exception as e:
+            print(f"Service call failed: {e}")
+
+    def on_right_slider_change(self, slider_value):
+        self.right_current_percent = round(slider_value)
+        self.right_hand_current_label.configure(text=f" Right Hand Current : {self.right_current_percent} [%] ")
+
+    def on_right_slider_release(self, event):
+        threading.Thread(
+            target=self.call_right_hand_current_service,
+            args=(self.right_current_percent,),
+            daemon=True
+        ).start()
+
+    def call_right_hand_current_service(self, current_value):
+        try:
+            subprocess.run(
+                [
+                    "ros2",
+                    "service",
+                    "call",
+                    "/aero_controller/set_current",
+                    "aero_controller_msgs/srv/SetCurrent",
+                    (
+                        "{joint_name: ['r_thumb_joint'], "
+                        f"max: [{int(current_value)}], "
+                        "min: [1]}"
+                    )
+                ],
+                check=True
+            )
+        except Exception as e:
+            print(f"Service call failed: {e}")
+
     def cv_to_tk(self, cv_img):
         rgb = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
         # rgb = cv2.resize(rgb, (638, 800))
@@ -312,18 +373,13 @@ class ImageGUI(ctk.CTk):
 
         return ImageTk.PhotoImage(pil_img)
 
-    def on_slider_change(self, value):
-        print("現在のスライダーの値:", round(value, 2))
-
     def update_images(self):
         with self.node.lock:
             for cam, img in self.node.images.items():
                 if img is not None:
                     tk_img = self.cv_to_tk(img)
-
                     self.labels[cam].configure(image=tk_img,text="")
                     self.labels[cam].image = tk_img
-
         self.after(30, self.update_images)
     
     def on_close(self):
@@ -331,16 +387,16 @@ class ImageGUI(ctk.CTk):
 
 
 def ros_spin(node):
-    rclpy.spin(node)
+    try:
+        rclpy.spin(node)
+    except ExternalShutdownException:
+        pass
 
 def main():
     rclpy.init()
-
     node = ImageSubscriber()
-
     spin_thread = threading.Thread(target=ros_spin, args=(node,), daemon=True)
     spin_thread.start()
-
     app = ImageGUI(node)
 
     try:
