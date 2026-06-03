@@ -74,6 +74,7 @@ class ImageGUI(ctk.CTk):
 
         self.title("MotionTracerGUI ROS2")
         self.geometry("1920x1080")
+        self.after(0, lambda: self.state('zoomed'))
 
         ctk.set_appearance_mode("Dark")
         ctk.set_default_color_theme("blue")
