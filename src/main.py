@@ -87,29 +87,11 @@ class FollowerSubscriber(Node):
             self
         )
 
-        self.joint_map = {}
-        self.mimic_map = {}
-
-        for i,name in enumerate(self.model.names):
-            self.joint_map[name] = i
-
         tree = ET.parse(urdf_path)
         root = tree.getroot()
 
         for joint in root.findall("joint"):
             joint_name = joint.attrib["name"]
-            mimic = joint.find("mimic")
-
-            if mimic is not None:
-                self.mimic_map[joint_name] = {
-                    "parent": mimic.attrib["joint"],
-                    "multiplier": float(
-                        mimic.attrib.get("multiplier", "1.0")
-                    ),
-                    "offset": float(
-                        mimic.attrib.get("offset", "0.0")
-                    )
-                }
 
             origin = joint.find("origin")
             axis = joint.find("axis")
@@ -288,8 +270,6 @@ class FollowerSubscriber(Node):
         }
 
         for joint_name, pos in name_to_pos.items():
-            if joint_name not in self.joint_map:
-                continue
             joint_id = self.model.getJointId(joint_name)
             if joint_id == self.model.njoints:
                 continue
@@ -317,7 +297,6 @@ class FollowerSubscriber(Node):
 class SkeletonViewer(OpenGLFrame):
     def __init__(self, parent, ros_node):
         self.node = ros_node
-        self.cached_links = None
         self.gl_ready = False
 
         super().__init__(parent, width=320, height=540)
@@ -327,28 +306,6 @@ class SkeletonViewer(OpenGLFrame):
         self.point_count = 0
         self.line_count  = 0
 
-        self.hidden_joint_keywords = [
-            "dummy",
-            "mimic",
-        ]
-
-        for joint_name in self.node.model.names:
-            self.node.model.getJointId(joint_name)
-
-        self.links = []
-        for frame in self.node.model.frames:
-            if frame.type != pin.FrameType.BODY:
-                continue
-            parent = frame.parentJoint
-            if parent <= 0:
-                continue
-            parent_name = self.node.model.names[parent]
-            self.links.append(
-                (
-                    parent_name,
-                    frame.name
-                )
-            )
         self.upper_joint_ids = self.get_upper_joint_ids()
 
     def initgl(self):
@@ -539,8 +496,8 @@ class SkeletonViewer(OpenGLFrame):
         glMatrixMode(GL_MODELVIEW)
         glLoadIdentity()
         gluLookAt(
-            2,
-            2,
+            1.5,
+            1.5,
             1.5,
 
             0,
@@ -555,8 +512,9 @@ class SkeletonViewer(OpenGLFrame):
         if self.point_vbo is None or self.line_vbo is None:
             return
         glEnableClientState(GL_VERTEX_ARRAY)
-        glPointSize(5)
+        glPointSize(8)
         self.point_vbo.bind()
+        glColor3f(1.0, 0.0, 0.0)
         glVertexPointer(
             3,
             GL_FLOAT,
@@ -568,9 +526,11 @@ class SkeletonViewer(OpenGLFrame):
             0,
             self.point_count
         )
-
         self.point_vbo.unbind()
+
         self.line_vbo.bind()
+        glColor3f(0.0, 0.0, 1.0)
+        glLineWidth(5.0)
         glVertexPointer(
             3,
             GL_FLOAT,
