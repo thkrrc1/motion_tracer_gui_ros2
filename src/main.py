@@ -13,11 +13,22 @@ import numpy as np
 from rclpy.qos import qos_profile_sensor_data
 from rclpy.executors import ExternalShutdownException
 
+from sensor_msgs.msg import JointState
+from tf2_ros import Buffer
+from tf2_ros import TransformListener
+import pinocchio as pin
+import xml.etree.ElementTree as ET
+
+from pyopengltk import OpenGLFrame
+from OpenGL.GL import *
+from OpenGL.arrays import vbo
+from OpenGL.GLU import *
+
 import subprocess
 import os
 import time
 
-class ImageSubscriber(Node):
+class FollowerSubscriber(Node):
     def __init__(self):
         super().__init__('image_subscriber')
 
@@ -50,7 +61,89 @@ class ImageSubscriber(Node):
             qos_profile_sensor_data
         )
 
-        self.get_logger().info("Subscribed to camera topics")
+        self.create_subscription(
+            JointState,
+            '/joint_states',
+            self.joint_callback,
+            qos_profile_sensor_data
+        )
+
+        self.current_joint_state = None
+        self.joint_state_count = 0
+        self.urdf_joints = {}
+        self.current_name_to_pos = {}
+
+        urdf_path = (
+            "/home/seed/ros2/jazzy/src/seed_robot_ros2_pkg/robots/noid_lifter_mover/model/noid_lifter_mover.urdf"
+        )
+        self.model = pin.buildModelFromUrdf(
+            urdf_path
+        )
+        self.data = self.model.createData()
+
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(
+            self.tf_buffer,
+            self
+        )
+
+        self.joint_map = {}
+        self.mimic_map = {}
+
+        for i,name in enumerate(self.model.names):
+            self.joint_map[name] = i
+
+        tree = ET.parse(urdf_path)
+        root = tree.getroot()
+
+        for joint in root.findall("joint"):
+            joint_name = joint.attrib["name"]
+            mimic = joint.find("mimic")
+
+            if mimic is not None:
+                self.mimic_map[joint_name] = {
+                    "parent": mimic.attrib["joint"],
+                    "multiplier": float(
+                        mimic.attrib.get("multiplier", "1.0")
+                    ),
+                    "offset": float(
+                        mimic.attrib.get("offset", "0.0")
+                    )
+                }
+
+            origin = joint.find("origin")
+            axis = joint.find("axis")
+            parent = joint.find("parent")
+            child = joint.find("child")
+
+            xyz = [0.0, 0.0, 0.0]
+            rpy = [0.0, 0.0, 0.0]
+
+            if origin is not None:
+                xyz = [
+                    float(v)
+                    for v in origin.attrib.get("xyz", "0 0 0").split()
+                ]
+                rpy = [
+                    float(v)
+                    for v in origin.attrib.get("rpy", "0 0 0").split()
+                ]
+
+            axis_xyz = [0.0, 0.0, 1.0]
+
+            if axis is not None:
+                axis_xyz = [
+                    float(v)
+                    for v in axis.attrib.get("xyz", "0 0 1").split()
+                ]
+
+            self.urdf_joints[joint_name] = {
+                "parent_link": parent.attrib["link"] if parent is not None else None,
+                "child_link": child.attrib["link"] if child is not None else None,
+                "xyz": np.array(xyz, dtype=float),
+                "rpy": np.array(rpy, dtype=float),
+                "axis": np.array(axis_xyz, dtype=float),
+            }
 
     def image_callback(self, msg, cam_name):
         # self.get_logger().info(f"{cam_name} frame received")
@@ -61,6 +154,443 @@ class ImageSubscriber(Node):
                 self.images[cam_name] = cv_img
         except Exception as e:
             self.get_logger().error(f"{cam_name}: {e}")
+
+    def joint_callback(self, msg):
+        with self.lock:
+            self.current_joint_state = msg
+            self.current_name_to_pos = {
+                name: pos for name, pos in zip(msg.name, msg.position)
+            }
+            self.joint_state_count += 1
+
+    def get_link_transform(self, link_name):
+        frame_id = self.model.getFrameId(link_name)
+        if frame_id == len(self.model.frames):
+            return None
+        return self.data.oMf[frame_id]
+
+    def compute_leg_display_fk(self):
+        with self.lock:
+            name_to_pos = dict(self.current_name_to_pos)
+
+        ankle = name_to_pos.get("ankle_joint", 0.0)
+        knee = name_to_pos.get("knee_joint", 0.0)
+
+        T_lifter_bottom = self.get_link_transform("lifter_bottom_link")
+        if T_lifter_bottom is None:
+            return None
+
+        T_leg_shank = (
+            T_lifter_bottom
+            * self.urdf_joint_transform("ankle_joint", ankle)
+        )
+        T_leg_knee = (
+            T_leg_shank
+            * self.urdf_joint_transform("ankle_joint_mimic", -ankle)
+        )
+        T_leg_thigh = (
+            T_leg_knee
+            * self.urdf_joint_transform("knee_joint", knee)
+        )
+        T_leg_base = (
+            T_leg_thigh
+            * self.urdf_joint_transform("knee_joint_mimic", -knee)
+        )
+
+        return {
+            "lifter_bottom_link": T_lifter_bottom,
+            "leg_shank_link": T_leg_shank,
+            "leg_knee_link": T_leg_knee,
+            "leg_thigh_link": T_leg_thigh,
+            "leg_base_link": T_leg_base,
+        }
+
+    def rpy_to_rot(self, rpy):
+        roll, pitch, yaw = rpy
+        cr, sr = np.cos(roll), np.sin(roll)
+        cp, sp = np.cos(pitch), np.sin(pitch)
+        cy, sy = np.cos(yaw), np.sin(yaw)
+
+        Rx = np.array([
+            [1, 0, 0],
+            [0, cr, -sr],
+            [0, sr, cr],
+        ])
+        Ry = np.array([
+            [cp, 0, sp],
+            [0, 1, 0],
+            [-sp, 0, cp],
+        ])
+        Rz = np.array([
+            [cy, -sy, 0],
+            [sy, cy, 0],
+            [0, 0, 1],
+        ])
+        return Rz @ Ry @ Rx
+
+    def axis_angle_to_rot(self, axis, angle):
+        axis = np.array(axis, dtype=float)
+        norm = np.linalg.norm(axis)
+        if norm < 1e-12:
+            return np.eye(3)
+        axis = axis / norm
+
+        x, y, z = axis
+        c = np.cos(angle)
+        s = np.sin(angle)
+        C = 1.0 - c
+
+        return np.array([
+            [c + x*x*C,     x*y*C - z*s, x*z*C + y*s],
+            [y*x*C + z*s,   c + y*y*C,   y*z*C - x*s],
+            [z*x*C - y*s,   z*y*C + x*s, c + z*z*C],
+        ])
+
+    def urdf_joint_transform(self, joint_name, q_value):
+        info = self.urdf_joints[joint_name]
+        T_origin = pin.SE3(
+            self.rpy_to_rot(info["rpy"]),
+            info["xyz"]
+        )
+        T_motion = pin.SE3(
+            self.axis_angle_to_rot(info["axis"], q_value),
+            np.zeros(3)
+        )
+        return T_origin * T_motion
+
+    def get_tf_position(self, target_frame, source_frame="base_link"):
+        try:
+            tf = self.tf_buffer.lookup_transform(
+                source_frame,
+                target_frame,
+                rclpy.time.Time()
+            )
+            t = tf.transform.translation
+            return np.array(
+                [t.x, t.y, t.z],
+                dtype=np.float32
+            )
+        except Exception:
+            return None
+
+    def get_joint_pos(self, joint_name):
+        joint_id = self.node.model.getJointId(joint_name)
+        if joint_id == self.node.model.njoints:
+            return None
+        p = self.node.data.oMi[joint_id].translation
+        return p
+
+    def build_q_from_joint_state(self, js):
+        q = pin.neutral(self.model)
+        name_to_pos = {
+            name: pos
+            for name, pos in zip(js.name, js.position)
+        }
+
+        for joint_name, pos in name_to_pos.items():
+            if joint_name not in self.joint_map:
+                continue
+            joint_id = self.model.getJointId(joint_name)
+            if joint_id == self.model.njoints:
+                continue
+            joint = self.model.joints[joint_id]
+            if joint.nq == 0:
+                continue
+            q[joint.idx_q] = pos
+        return q
+
+    def compute_fk(self):
+        with self.lock:
+            js = self.current_joint_state
+            count = self.joint_state_count
+        if js is None:
+            return False
+        if count < 5:
+            return False
+        q = self.build_q_from_joint_state(js)
+
+        pin.forwardKinematics(self.model, self.data, q)
+        pin.updateFramePlacements(self.model, self.data)
+        return self.data
+
+
+class SkeletonViewer(OpenGLFrame):
+    def __init__(self, parent, ros_node):
+        self.node = ros_node
+        self.cached_links = None
+        self.gl_ready = False
+
+        super().__init__(parent, width=320, height=540)
+
+        self.point_vbo = None
+        self.line_vbo  = None
+        self.point_count = 0
+        self.line_count  = 0
+
+        self.hidden_joint_keywords = [
+            "dummy",
+            "mimic",
+        ]
+
+        for joint_name in self.node.model.names:
+            self.node.model.getJointId(joint_name)
+
+        self.links = []
+        for frame in self.node.model.frames:
+            if frame.type != pin.FrameType.BODY:
+                continue
+            parent = frame.parentJoint
+            if parent <= 0:
+                continue
+            parent_name = self.node.model.names[parent]
+            self.links.append(
+                (
+                    parent_name,
+                    frame.name
+                )
+            )
+        self.upper_joint_ids = self.get_upper_joint_ids()
+
+    def initgl(self):
+        self.gl_ready = True
+        glEnable(GL_DEPTH_TEST)
+        self.animate = 1
+        glClearColor(
+            0.1,
+            0.1,
+            0.1,
+            1.0
+        )
+        glDepthFunc(GL_LESS)
+
+    def apply_delta(self, T_delta, p):
+        return T_delta.rotation @ p + T_delta.translation
+
+    def get_upper_joint_ids(self):
+        waist_id = self.node.model.getJointId("waist_y_joint")
+        ids = set()
+        for joint_id in range(1, self.node.model.njoints):
+            cur = joint_id
+            while cur > 0:
+                if cur == waist_id:
+                    ids.add(joint_id)
+                    break
+                cur = self.node.model.parents[cur]
+        return ids
+
+    def is_draw_joint(self, joint_id):
+        name = self.node.model.names[joint_id]
+        if "mimic" in name:
+            return False
+        if "dummy" in name:
+            return False
+        return True
+
+    def get_joint_translation(self, joint_name):
+        joint_id = self.node.model.getJointId(joint_name)
+        if joint_id == self.node.model.njoints:
+            return None
+        return self.node.data.oMi[joint_id].translation
+
+    def add_leg_corrected_lines(self, line_vertices, leg_fk, T_delta):
+        if leg_fk is None:
+            return
+        def pos(link_name):
+            T = leg_fk.get(link_name)
+            if T is None:
+                return None
+            return T.translation
+
+        special_links = [
+            ("lifter_bottom_link", "leg_shank_link"),
+            ("leg_shank_link", "leg_knee_link"),
+            ("leg_knee_link", "leg_thigh_link"),
+            ("leg_thigh_link", "leg_base_link"),
+        ]
+
+        for parent_link, child_link in special_links:
+            p0 = pos(parent_link)
+            p1 = pos(child_link)
+            if p0 is None or p1 is None:
+                continue
+            line_vertices.extend([
+                p0[0], p0[1], p0[2],
+                p1[0], p1[1], p1[2],
+            ])
+
+        waist = self.get_joint_translation("waist_y_joint")
+        if waist is not None and T_delta is not None:
+            waist = self.apply_delta(T_delta, waist)
+            leg_base = pos("leg_base_link")
+            if leg_base is not None:
+                line_vertices.extend([
+                    leg_base[0], leg_base[1], leg_base[2],
+                    waist[0], waist[1], waist[2],
+                ])
+
+    def update_vbo(self):
+        if not self.gl_ready:
+            return
+
+        leg_fk = self.node.compute_leg_display_fk()
+        T_delta = None
+        if leg_fk is not None:
+            T_leg_base_corrected = leg_fk["leg_base_link"]
+            T_leg_base_original = self.node.get_link_transform("leg_base_link")
+            if T_leg_base_original is not None:
+                T_delta = (
+                    T_leg_base_corrected
+                    * T_leg_base_original.inverse()
+                )
+
+        point_vertices = []
+        for joint_id in range(1, self.node.model.njoints):
+            if not self.is_draw_joint(joint_id):
+                continue
+            p = self.node.data.oMi[joint_id].translation
+            if T_delta is not None and joint_id in self.upper_joint_ids:
+                p = self.apply_delta(T_delta, p)
+            point_vertices.extend([
+                p[0], p[1], p[2]
+            ])
+
+        line_vertices = []
+        skip_links = {
+            ("ankle_joint", "knee_joint"),
+            ("knee_joint", "waist_y_joint"),
+            ("ankle_joint", "ankle_joint_mimic"),
+            ("ankle_joint_mimic", "knee_joint"),
+            ("knee_joint", "knee_joint_mimic"),
+            ("knee_joint_mimic", "waist_y_joint"),
+        }
+        for joint_id in range(1, self.node.model.njoints):
+            if not self.is_draw_joint(joint_id):
+                continue
+
+            parent = self.node.model.parents[joint_id]
+            if parent <= 0:
+                continue
+
+            parent_name = self.node.model.names[parent]
+            child_name = self.node.model.names[joint_id]
+
+            if (parent_name, child_name) in skip_links:
+                continue
+
+            p0 = self.node.data.oMi[parent].translation
+            p1 = self.node.data.oMi[joint_id].translation
+            if T_delta is not None and parent in self.upper_joint_ids:
+                p0 = self.apply_delta(T_delta, p0)
+            if T_delta is not None and joint_id in self.upper_joint_ids:
+                p1 = self.apply_delta(T_delta, p1)
+            line_vertices.extend([
+                p0[0], p0[1], p0[2],
+                p1[0], p1[1], p1[2],
+            ])
+
+        self.add_leg_corrected_lines(
+            line_vertices,
+            leg_fk,
+            T_delta
+        )
+
+        point_vertices = np.array(point_vertices, dtype=np.float32)
+        line_vertices = np.array(line_vertices, dtype=np.float32)
+
+        self.point_count = len(point_vertices) // 3
+        self.line_count = len(line_vertices) // 3
+
+        if self.point_vbo is None:
+            self.point_vbo = vbo.VBO(point_vertices, usage='GL_DYNAMIC_DRAW')
+        else:
+            self.point_vbo.set_array(point_vertices)
+        if self.line_vbo is None:
+            self.line_vbo = vbo.VBO(line_vertices, usage='GL_DYNAMIC_DRAW')
+        else:
+            self.line_vbo.set_array(line_vertices)
+
+    def redraw(self):
+        glClear(
+            GL_COLOR_BUFFER_BIT |
+            GL_DEPTH_BUFFER_BIT
+        )
+        w = max(
+            self.winfo_width(),
+            1
+        )
+        h = max(
+            self.winfo_height(),
+            1
+        )
+        glViewport(
+            0,
+            0,
+            w,
+            h
+        )
+        glMatrixMode(GL_PROJECTION)
+        glLoadIdentity()
+        gluPerspective(
+            45,
+            w / h,
+            0.01,
+            100
+        )
+        glMatrixMode(GL_MODELVIEW)
+        glLoadIdentity()
+        gluLookAt(
+            2,
+            2,
+            1.5,
+
+            0,
+            0,
+            0.8,
+
+            0,
+            0,
+            1
+        )
+
+        if self.point_vbo is None or self.line_vbo is None:
+            return
+        glEnableClientState(GL_VERTEX_ARRAY)
+        glPointSize(5)
+        self.point_vbo.bind()
+        glVertexPointer(
+            3,
+            GL_FLOAT,
+            0,
+            None
+        )
+        glDrawArrays(
+            GL_POINTS,
+            0,
+            self.point_count
+        )
+
+        self.point_vbo.unbind()
+        self.line_vbo.bind()
+        glVertexPointer(
+            3,
+            GL_FLOAT,
+            0,
+            None
+        )
+        glDrawArrays(
+            GL_LINES,
+            0,
+            self.line_count
+        )
+        self.line_vbo.unbind()
+        glDisableClientState(GL_VERTEX_ARRAY)
+        glFlush()
+
+    def cleanup_gl(self):
+        if self.point_vbo:
+            self.point_vbo.delete()
+        if self.line_vbo:
+            self.line_vbo.delete()
 
 
 class ImageGUI(ctk.CTk):
@@ -74,7 +604,8 @@ class ImageGUI(ctk.CTk):
 
         self.title("MotionTracerGUI ROS2")
         self.geometry("1920x1080")
-        self.after(0, lambda: self.state('zoomed'))
+        # self.attributes('-fullscreen',True)
+        self.after(0,lambda:self.attributes('-zoomed',True))
 
         ctk.set_appearance_mode("Dark")
         ctk.set_default_color_theme("blue")
@@ -85,91 +616,68 @@ class ImageGUI(ctk.CTk):
 
         self.main_frame = ctk.CTkFrame(self)
         self.main_frame.pack(fill="both", expand=True)
-
-        #-----------------------------------------------------------------------------------------
-
-        # self.view_frame = ctk.CTkFrame(self.main_frame)
-        # self.view_frame.pack(side=ctk.TOP)
-
-        # for i, cam in enumerate(["camera1", "camera2", "camera3"]):
-        #     image_frame = ctk.CTkFrame(self.view_frame)
-        #     image_frame.grid(row=0, column=i)
-
-        #     label = ctk.CTkLabel(image_frame, text=f"/{cam}/image_raw/compressed\nWaiting for image...")
-        #     label.pack(padx=1)
-        #     self.labels[cam] = label
-
-        #-----------------------------------------------------------------------------------------
-
-        # self.head_view_frame = ctk.CTkFrame(self.main_frame)
-        # self.head_view_frame.pack(side=ctk.TOP)
-
-        # head_image_frame = ctk.CTkFrame(self.head_view_frame)
-        # head_image_frame.pack()
-
-        # head_label = ctk.CTkLabel(head_image_frame, text="/camera1/image_raw/compressed\nWaiting for image...")
-        # head_label.pack(padx=1)
-        # self.labels["camera1"] = head_label
-
-        # self.arm_view_frame = ctk.CTkFrame(self.main_frame)
-        # self.arm_view_frame.pack(side=ctk.TOP)
-
-        # left_image_frame = ctk.CTkFrame(self.arm_view_frame)
-        # left_image_frame.pack(side=ctk.LEFT)
-
-        # left_label = ctk.CTkLabel(left_image_frame, text="/camera2/image_raw/compressed\nWaiting for image...")
-        # left_label.pack(padx=1)
-        # self.labels["camera2"] = left_label
-
-        # right_image_frame = ctk.CTkFrame(self.arm_view_frame)
-        # right_image_frame.pack(side=ctk.RIGHT)
-
-        # right_label = ctk.CTkLabel(right_image_frame, text="/camera3/image_raw/compressed\nWaiting for image...")
-        # right_label.pack(padx=1)
-        # self.labels["camera3"] = right_label
-
-        #-----------------------------------------------------------------------------------------
+        self.main_frame.grid_rowconfigure(0, weight=1)
+        self.main_frame.grid_rowconfigure(1, weight=1)
+        self.main_frame.grid_columnconfigure(0, weight=1)
+        self.main_frame.grid_columnconfigure(1, weight=1)
 
         head_image_frame = ctk.CTkFrame(self.main_frame)
-        head_image_frame.grid(row=0, column=0)
+        head_image_frame.grid(row=0, column=0, sticky="nsew")
 
         head_label = ctk.CTkLabel(head_image_frame, width=960, height=540, text="/camera1/image_raw/compressed\nWaiting for image...")
-        head_label.pack(padx=1)
+        head_label.pack(padx=10)
         self.labels["camera1"] = head_label
 
         right_image_frame = ctk.CTkFrame(self.main_frame)
-        right_image_frame.grid(row=0, column=1)
+        right_image_frame.grid(row=0, column=1, sticky="nsew")
 
         right_label = ctk.CTkLabel(right_image_frame, width=960, height=540, text="/camera2/image_raw/compressed\nWaiting for image...")
-        right_label.pack(padx=1)
+        right_label.pack(padx=10)
         self.labels["camera2"] = right_label
 
         left_image_frame = ctk.CTkFrame(self.main_frame)
-        left_image_frame.grid(row=1, column=0)
+        left_image_frame.grid(row=1, column=0, sticky="nsew")
 
         left_label = ctk.CTkLabel(left_image_frame, width=960, height=540, text="/camera3/image_raw/compressed\nWaiting for image...")
-        left_label.pack(padx=1)
+        left_label.pack(padx=10)
         self.labels["camera3"] = left_label
 
-        #-----------------------------------------------------------------------------------------
-
         control_frame = ctk.CTkFrame(self.main_frame, width=960, height=540)
-        control_frame.grid(row=1, column=1)
+        control_frame.grid(row=1, column=1, sticky="nsew")
+        control_frame.grid_rowconfigure(0, weight=1)
+        control_frame.grid_columnconfigure(0, weight=1)
+        control_frame.grid_columnconfigure(1, weight=2)
 
-        control_button_frame = ctk.CTkFrame(control_frame, width=960, height=270)
-        control_button_frame.pack(side=ctk.TOP, pady=(0, 100))
+        viewer_frame = ctk.CTkFrame(control_frame)
+        viewer_frame.grid(row=0, column=0, sticky="nsew")
+
+        self.skeleton_viewer = (SkeletonViewer(viewer_frame, self.node))
+        self.skeleton_viewer.pack(fill="both", expand=True)
+
+        operation_frame = ctk.CTkFrame(control_frame)
+        operation_frame.grid(row=0, column=1, sticky="nsew")
+        operation_frame.grid_rowconfigure(0, weight=1)
+        operation_frame.grid_rowconfigure(1, weight=1)
+        operation_frame.grid_columnconfigure(0, weight=1)
+
+        control_button_frame = ctk.CTkFrame(operation_frame)
+        control_button_frame.grid(row=0, column=0, sticky="")
+        for c in range(3):
+            control_button_frame.grid_columnconfigure(c, weight=1)
 
         robot_bringup_button = ctk.CTkButton(control_button_frame, text="Robot Bring Up", width=150, height=150, command=self.on_robot_bringup_click)
-        robot_bringup_button.grid(row=0, column=0, padx=10, pady=0)
+        robot_bringup_button.grid(row=0, column=0, padx=10)
 
         tracer_bringup_button = ctk.CTkButton(control_button_frame, text="Tracer Bring Up", width=150, height=150, command=self.on_tracer_bringup_click)
-        tracer_bringup_button.grid(row=0, column=1, padx=10, pady=0)
+        tracer_bringup_button.grid(row=0, column=1, padx=10)
 
         finish_button = ctk.CTkButton(control_button_frame, text="All Finish", width=150, height=150, command=self.on_finish_click)
-        finish_button.grid(row=0, column=2, padx=10, pady=0)
+        finish_button.grid(row=0, column=2, padx=10)
 
-        control_slider_frame = ctk.CTkFrame(control_frame)
-        control_slider_frame.pack(side=ctk.BOTTOM)
+        control_slider_frame = ctk.CTkFrame(operation_frame)
+        control_slider_frame.grid(row=1, column=0, sticky="")
+        control_slider_frame.grid_columnconfigure(0, weight=1)
+        control_slider_frame.grid_columnconfigure(1, weight=1)
 
         self.left_hand_current_label = ctk.CTkLabel(control_slider_frame, text=f" Left Hand Current : {self.left_current_percent} [%] ")
         self.left_hand_current_label.grid(row=0, column=0, padx=10)
@@ -186,8 +694,16 @@ class ImageGUI(ctk.CTk):
         self.right_hand_current_slider.bind("<ButtonRelease-1>", self.on_right_slider_release)
 
         self.update_images()
+        self.after(100,self.update_skeleton)
 
         self.protocol("WM_DELETE_WINDOW", self.on_close)
+
+    def update_skeleton(self):
+        ok = self.node.compute_fk()
+        if ok:
+            self.skeleton_viewer.update_vbo()
+            self.skeleton_viewer.redraw()
+        self.after(16, self.update_skeleton)
     
     def on_robot_bringup_click(self):
         threading.Thread(
@@ -365,9 +881,6 @@ class ImageGUI(ctk.CTk):
 
     def cv_to_tk(self, cv_img):
         rgb = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
-        # rgb = cv2.resize(rgb, (638, 800))
-        # rgb = cv2.resize(rgb, (588, 440))
-        # rgb = cv2.resize(rgb, (960, 512))
         rgb = cv2.resize(rgb, (960, 540))
 
         pil_img = Image.fromarray(rgb)
@@ -384,6 +897,7 @@ class ImageGUI(ctk.CTk):
         self.after(30, self.update_images)
     
     def on_close(self):
+        self.skeleton_viewer.cleanup_gl()
         self.destroy()
 
 
@@ -395,7 +909,7 @@ def ros_spin(node):
 
 def main():
     rclpy.init()
-    node = ImageSubscriber()
+    node = FollowerSubscriber()
     spin_thread = threading.Thread(target=ros_spin, args=(node,), daemon=True)
     spin_thread.start()
     app = ImageGUI(node)
