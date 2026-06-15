@@ -496,12 +496,12 @@ class SkeletonViewer(OpenGLFrame):
         glMatrixMode(GL_MODELVIEW)
         glLoadIdentity()
         gluLookAt(
-            1.5,
-            1.5,
+            -1.0,
+            -1.5,
             1.5,
 
-            0,
-            0,
+            0.3,
+            0.2,
             0.8,
 
             0,
@@ -530,7 +530,7 @@ class SkeletonViewer(OpenGLFrame):
 
         self.line_vbo.bind()
         glColor3f(0.0, 0.0, 1.0)
-        glLineWidth(5.0)
+        glLineWidth(7.0)
         glVertexPointer(
             3,
             GL_FLOAT,
