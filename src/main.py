@@ -686,7 +686,7 @@ class ImageGUI(ctk.CTk):
                     "seed@192.168.0.50 "
                     "'source /opt/ros/jazzy/setup.bash && "
                     "source ~/ros2/jazzy/install/setup.bash && "
-                    "ros2 launch motion_tracer_ros2 robot_bringup.launch.py simulation:=false'"
+                    "ros2 launch motion_tracer_ros2 robot_bringup.launch.py simulation:=false display_rviz2:=false'"
                 )
             ],
             preexec_fn=os.setsid
