@@ -553,7 +553,7 @@ class SkeletonViewer(OpenGLFrame):
             self.line_vbo.delete()
 
 
-class ImageGUI(ctk.CTk):
+class MainGUI(ctk.CTk):
     def __init__(self, ros_node):
         super().__init__()
 
@@ -625,14 +625,17 @@ class ImageGUI(ctk.CTk):
         for c in range(3):
             control_button_frame.grid_columnconfigure(c, weight=1)
 
-        robot_bringup_button = ctk.CTkButton(control_button_frame, text="Robot Bring Up", width=150, height=150, command=self.on_robot_bringup_click)
+        robot_bringup_button = ctk.CTkButton(control_button_frame, text="Robot Bring Up", width=150, height=150, command=None)
         robot_bringup_button.grid(row=0, column=0, padx=10)
+        robot_bringup_button.bind("<ButtonRelease-1>", self.on_robot_bringup_release)
 
-        tracer_bringup_button = ctk.CTkButton(control_button_frame, text="Tracer Bring Up", width=150, height=150, command=self.on_tracer_bringup_click)
+        tracer_bringup_button = ctk.CTkButton(control_button_frame, text="Tracer Bring Up", width=150, height=150, command=None)
         tracer_bringup_button.grid(row=0, column=1, padx=10)
+        tracer_bringup_button.bind("<ButtonRelease-1>", self.on_tracer_bringup_release)
 
-        finish_button = ctk.CTkButton(control_button_frame, text="All Finish", width=150, height=150, command=self.on_finish_click)
+        finish_button = ctk.CTkButton(control_button_frame, text="All Finish", width=150, height=150, command=None)
         finish_button.grid(row=0, column=2, padx=10)
+        finish_button.bind("<ButtonRelease-1>", self.on_finish_release)
 
         control_slider_frame = ctk.CTkFrame(operation_frame)
         control_slider_frame.grid(row=1, column=0, sticky="")
@@ -664,7 +667,10 @@ class ImageGUI(ctk.CTk):
             self.skeleton_viewer.update_vbo()
             self.skeleton_viewer.redraw()
         self.after(16, self.update_skeleton)
-    
+
+    def on_robot_bringup_release(self, event):
+        self.on_robot_bringup_click()
+
     def on_robot_bringup_click(self):
         threading.Thread(
             target=self.start_robot_bringup,
@@ -695,6 +701,9 @@ class ImageGUI(ctk.CTk):
         self.on_right_slider_change(self.right_current_percent)
         print("Robot System Bring Up")
 
+    def on_tracer_bringup_release(self, event):
+        self.on_tracer_bringup_click()
+
     def on_tracer_bringup_click(self):
         threading.Thread(
             target=self.start_tracer_bringup,
@@ -716,6 +725,9 @@ class ImageGUI(ctk.CTk):
             preexec_fn=os.setsid
         )
         print("Tracer System Bring Up")
+
+    def on_finish_release(self, event):
+        self.on_finish_click()
 
     def on_finish_click(self):
         threading.Thread(
@@ -872,7 +884,7 @@ def main():
     node = FollowerSubscriber()
     spin_thread = threading.Thread(target=ros_spin, args=(node,), daemon=True)
     spin_thread.start()
-    app = ImageGUI(node)
+    app = MainGUI(node)
 
     try:
         app.mainloop()
