@@ -255,13 +255,6 @@ class FollowerSubscriber(Node):
         except Exception:
             return None
 
-    def get_joint_pos(self, joint_name):
-        joint_id = self.node.model.getJointId(joint_name)
-        if joint_id == self.node.model.njoints:
-            return None
-        p = self.node.data.oMi[joint_id].translation
-        return p
-
     def build_q_from_joint_state(self, js):
         q = pin.neutral(self.model)
         name_to_pos = {
@@ -562,6 +555,9 @@ class MainGUI(ctk.CTk):
         self.robot_process = None
         self.tracer_process = None
 
+        self.finish_requested = False
+        self.process_lock = threading.Lock()
+
         self.title("MotionTracerGUI ROS2")
         self.geometry("1920x1080")
         # self.attributes('-fullscreen',True)
@@ -668,10 +664,37 @@ class MainGUI(ctk.CTk):
             self.skeleton_viewer.redraw()
         self.after(16, self.update_skeleton)
 
+    def wait_for_robot_current_service(self, timeout_sec=15):
+        start_time = time.time()
+        while time.time() - start_time < timeout_sec:
+            if self.is_finish_requested():
+                return False
+            try:
+                result = subprocess.run(
+                    [
+                        "ros2",
+                        "service",
+                        "list"
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=3
+                )
+                if "/aero_controller/set_current" in result.stdout:
+                    return True
+            except Exception as e:
+                print(f"Service check failed: {e}")
+            time.sleep(1.0)
+        return False
+
     def on_robot_bringup_release(self, event):
         self.on_robot_bringup_click()
 
     def on_robot_bringup_click(self):
+        with self.process_lock:
+            if self.finish_requested:
+                return
+
         threading.Thread(
             target=self.start_robot_bringup,
             daemon=True
@@ -688,7 +711,7 @@ class MainGUI(ctk.CTk):
                     "seed",
                     "ssh",
                     "-o",
-                    "ConnectTimeout=5",
+                    "ConnectTimeout=1",
                     "-o",
                     "StrictHostKeyChecking=no",
                     "seed@192.168.0.50",
@@ -696,7 +719,7 @@ class MainGUI(ctk.CTk):
                 ],
                 capture_output=True,
                 text=True,
-                timeout=10
+                timeout=3
             )
 
             if result.returncode != 0:
@@ -706,6 +729,9 @@ class MainGUI(ctk.CTk):
 
         except Exception as e:
             print(f"ERROR : SSH connection exception : {e}")
+            return
+
+        if self.is_finish_requested():
             return
 
         self.robot_process = subprocess.Popen(
@@ -725,14 +751,26 @@ class MainGUI(ctk.CTk):
             ],
             preexec_fn=os.setsid
         )
-        self.on_left_slider_change(self.left_current_percent)
-        self.on_right_slider_change(self.right_current_percent)
+
+        if not self.wait_for_robot_current_service(timeout_sec=15):
+            print("ERROR : /aero_controller/set_current service is not available")
+            return
+
+        if self.is_finish_requested():
+            return
+
+        self.call_left_hand_current_service(self.left_current_percent)
+        self.call_right_hand_current_service(self.right_current_percent)
         print("Robot System Bring Up")
 
     def on_tracer_bringup_release(self, event):
         self.on_tracer_bringup_click()
 
     def on_tracer_bringup_click(self):
+        with self.process_lock:
+            if self.finish_requested:
+                return
+
         threading.Thread(
             target=self.start_tracer_bringup,
             daemon=True
@@ -740,6 +778,8 @@ class MainGUI(ctk.CTk):
         print("Clicked Tracer Bring Up Button")
 
     def start_tracer_bringup(self):
+        if self.is_finish_requested():
+            return
         self.tracer_process = subprocess.Popen(
             [
                 "gnome-terminal",
@@ -754,6 +794,10 @@ class MainGUI(ctk.CTk):
         )
         print("Tracer System Bring Up")
 
+    def is_finish_requested(self):
+        with self.process_lock:
+            return self.finish_requested
+
     def on_finish_release(self, event):
         self.on_finish_click()
 
@@ -765,6 +809,9 @@ class MainGUI(ctk.CTk):
         print("Clicked All Finish Button")
 
     def finish_all(self):
+        with self.process_lock:
+            self.finish_requested = True
+
         subprocess.run(
             [
                 "killall",
@@ -772,31 +819,65 @@ class MainGUI(ctk.CTk):
                 "ros2"
             ]
         )
+
         #SSHパスワード暫定対応
-        subprocess.run(
-            [
-                "sshpass",
-                "-p",
-                "seed",
-                "ssh",
-                "-o",
-                "StrictHostKeyChecking=no",
-                "seed@192.168.0.50",
-                "killall -SIGINT "
-                "ros2 "
-                "ros2_control_node "
-                "robot_state_publisher "
-                "rviz2 urg_node2_node "
-                "scan_to_scan_filter_chain "
-                "init_pose_pub "
-                "static_transform_publisher "
-                "component_container "
-                "joy_linux_node "
-                "upper_controller_node "
-                "lower_controller_node "
-                "move_group"
-            ]
-        )
+        ok_ssh = True
+        try:
+            result = subprocess.run(
+                [
+                    "sshpass",
+                    "-p",
+                    "seed",
+                    "ssh",
+                    "-o",
+                    "ConnectTimeout=1",
+                    "-o",
+                    "StrictHostKeyChecking=no",
+                    "seed@192.168.0.50",
+                    "echo connected"
+                ],
+                capture_output=True,
+                text=True,
+                timeout=3
+            )
+
+            if result.returncode != 0:
+                ok_ssh = False
+                print("ERROR : SSH connection failed")
+                print(result.stderr)
+
+        except Exception as e:
+            ok_ssh = False
+            print(f"ERROR : SSH connection exception : {e}")
+
+        if ok_ssh:
+            try:
+                subprocess.run(
+                    [
+                        "sshpass",
+                        "-p",
+                        "seed",
+                        "ssh",
+                        "-o",
+                        "StrictHostKeyChecking=no",
+                        "seed@192.168.0.50",
+                        "killall -SIGINT "
+                        "ros2 "
+                        "ros2_control_node "
+                        "robot_state_publisher "
+                        "rviz2 urg_node2_node "
+                        "scan_to_scan_filter_chain "
+                        "init_pose_pub "
+                        "static_transform_publisher "
+                        "component_container "
+                        "joy_linux_node "
+                        "upper_controller_node "
+                        "lower_controller_node "
+                        "move_group"
+                    ]
+                )
+            except Exception as e:
+                print(f"ERROR : ROS process kill exception : {e}")
         time.sleep(1)
 
         if self.tracer_process is not None:
@@ -815,6 +896,7 @@ class MainGUI(ctk.CTk):
                 self.robot_process.kill()
             self.robot_process = None
 
+        self.finish_requested = False
         print("All System Finished")
 
     def on_left_slider_change(self, slider_value):
@@ -897,6 +979,7 @@ class MainGUI(ctk.CTk):
         self.after(30, self.update_images)
     
     def on_close(self):
+        self.finish_all()
         self.skeleton_viewer.cleanup_gl()
         self.destroy()
 
