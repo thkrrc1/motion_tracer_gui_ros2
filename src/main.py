@@ -680,6 +680,34 @@ class MainGUI(ctk.CTk):
 
     def start_robot_bringup(self):
         #SSHパスワード暫定対応
+        try:
+            result = subprocess.run(
+                [
+                    "sshpass",
+                    "-p",
+                    "seed",
+                    "ssh",
+                    "-o",
+                    "ConnectTimeout=5",
+                    "-o",
+                    "StrictHostKeyChecking=no",
+                    "seed@192.168.0.50",
+                    "echo connected"
+                ],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+
+            if result.returncode != 0:
+                print("ERROR : SSH connection failed")
+                print(result.stderr)
+                return
+
+        except Exception as e:
+            print(f"ERROR : SSH connection exception : {e}")
+            return
+
         self.robot_process = subprocess.Popen(
             [
                 "gnome-terminal",
