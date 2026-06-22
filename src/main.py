@@ -12,6 +12,13 @@ from sensor_msgs.msg import CompressedImage as RosImage
 import numpy as np
 from rclpy.qos import qos_profile_sensor_data
 from rclpy.executors import ExternalShutdownException
+from std_msgs.msg import Bool
+from rclpy.qos import (
+    QoSProfile,
+    HistoryPolicy,
+    ReliabilityPolicy,
+    DurabilityPolicy,
+)
 
 from sensor_msgs.msg import JointState
 from tf2_ros import Buffer
@@ -33,6 +40,10 @@ class FollowerSubscriber(Node):
         super().__init__('image_subscriber')
 
         self.lock = threading.Lock()
+
+        self.mode_lock = threading.Lock()
+        self.cur_mode = False
+        self.cur_mode_version = 0
 
         self.images = {
             "camera1": None,
@@ -66,6 +77,19 @@ class FollowerSubscriber(Node):
             '/joint_states',
             self.joint_callback,
             qos_profile_sensor_data
+        )
+
+        mode_qos = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        )
+        self.create_subscription(
+            Bool,
+            '/tracer_mode',
+            self.notify_Tracer_mode_callback,
+            mode_qos
         )
 
         self.current_joint_state = None
@@ -144,6 +168,14 @@ class FollowerSubscriber(Node):
                 name: pos for name, pos in zip(msg.name, msg.position)
             }
             self.joint_state_count += 1
+
+    def notify_Tracer_mode_callback(self, msg):
+        with self.mode_lock:
+            self.cur_mode = bool(msg.data)
+            if self.cur_mode:
+                self.cur_mode_version = 1
+            else:
+                self.cur_mode_version = 0
 
     def get_link_transform(self, link_name):
         frame_id = self.model.getFrameId(link_name)
@@ -614,6 +646,7 @@ class MainGUI(ctk.CTk):
         operation_frame.grid(row=0, column=1, sticky="nsew")
         operation_frame.grid_rowconfigure(0, weight=1)
         operation_frame.grid_rowconfigure(1, weight=1)
+        operation_frame.grid_rowconfigure(2, weight=0)
         operation_frame.grid_columnconfigure(0, weight=1)
 
         control_button_frame = ctk.CTkFrame(operation_frame)
@@ -652,8 +685,15 @@ class MainGUI(ctk.CTk):
         self.right_hand_current_slider.grid(row=1, column=1, padx=10)
         self.right_hand_current_slider.bind("<ButtonRelease-1>", self.on_right_slider_release)
 
+        mode_frame = ctk.CTkFrame(operation_frame)
+        mode_frame.grid(row=2, column=0, sticky="nsew")
+        self.mode_label = ctk.CTkLabel(mode_frame, text="Mode : ---", font=ctk.CTkFont(size=28, weight="bold"))
+        self.mode_label.pack(padx=10, pady=15)
+        self.last_mode_version = -1
+
         self.update_images()
         self.after(100,self.update_skeleton)
+        self.update_mode_label()
 
         self.protocol("WM_DELETE_WINDOW", self.on_close)
 
@@ -977,6 +1017,19 @@ class MainGUI(ctk.CTk):
                     self.labels[cam].configure(image=tk_img,text="")
                     self.labels[cam].image = tk_img
         self.after(30, self.update_images)
+
+    def update_mode_label(self):
+        with self.node.mode_lock:
+            cur_mode = self.node.cur_mode
+            version = self.node.cur_mode_version
+        if version != self.last_mode_version:
+            if cur_mode:
+                mode_text = "[ Mover & Lifter ]  Mode"
+            else:
+                mode_text = "[ Neck & Waist ]  Mode"
+            self.mode_label.configure(text=mode_text)
+            self.last_mode_version = version
+        self.after(50, self.update_mode_label)
     
     def on_close(self):
         self.finish_all()
