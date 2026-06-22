@@ -1,0 +1,4 @@
+{
+    "robot_ssh_target": "seed@192.168.0.50",
+    "robot_ssh_password": "seed"
+}

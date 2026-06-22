@@ -35,6 +35,10 @@ import subprocess
 import os
 import time
 
+import json
+import shlex
+from pathlib import Path
+
 class FollowerSubscriber(Node):
     def __init__(self):
         super().__init__('image_subscriber')
@@ -625,6 +629,8 @@ class MainGUI(ctk.CTk):
         self.left_current_percent = 30
         self.right_current_percent = 30
 
+        self.ssh_config = self.load_ssh_config()
+
         self.main_frame = ctk.CTkFrame(self)
         self.main_frame.pack(fill="both", expand=True)
         self.main_frame.grid_rowconfigure(0, weight=1)
@@ -667,14 +673,32 @@ class MainGUI(ctk.CTk):
 
         operation_frame = ctk.CTkFrame(control_frame)
         operation_frame.grid(row=0, column=1, sticky="nsew")
-        operation_frame.grid_rowconfigure(0, weight=1)
+        operation_frame.grid_rowconfigure(0, weight=0)
         operation_frame.grid_rowconfigure(1, weight=1)
-        operation_frame.grid_rowconfigure(2, weight=0)
+        operation_frame.grid_rowconfigure(2, weight=1)
         operation_frame.grid_rowconfigure(3, weight=0)
+        operation_frame.grid_rowconfigure(4, weight=0)
         operation_frame.grid_columnconfigure(0, weight=1)
 
+        ssh_config_frame = ctk.CTkFrame(operation_frame)
+        ssh_config_frame.grid(row=0, column=0, sticky="ew", padx=10, pady=5)
+        ssh_config_frame.grid_columnconfigure(1, weight=1)
+        ssh_config_frame.grid_columnconfigure(3, weight=1)
+
+        ssh_target_label = ctk.CTkLabel(ssh_config_frame, text="Connect to [user@host]:")
+        ssh_target_label.grid(row=0, column=0, padx=5, pady=5)
+        self.robot_ssh_target_entry = ctk.CTkEntry(ssh_config_frame, width=220)
+        self.robot_ssh_target_entry.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
+        self.robot_ssh_target_entry.insert(0, self.ssh_config["robot_ssh_target"])
+
+        ssh_password_label = ctk.CTkLabel(ssh_config_frame, text="password:")
+        ssh_password_label.grid(row=0, column=2, padx=5, pady=5)
+        self.robot_ssh_password_entry = ctk.CTkEntry(ssh_config_frame, width=180,show="*")
+        self.robot_ssh_password_entry.grid(row=0, column=3, padx=5, pady=5, sticky="ew")
+        self.robot_ssh_password_entry.insert(0, self.ssh_config["robot_ssh_password"])
+
         control_button_frame = ctk.CTkFrame(operation_frame)
-        control_button_frame.grid(row=0, column=0, sticky="")
+        control_button_frame.grid(row=1, column=0, sticky="")
         for c in range(3):
             control_button_frame.grid_columnconfigure(c, weight=1)
 
@@ -691,7 +715,7 @@ class MainGUI(ctk.CTk):
         finish_button.bind("<ButtonRelease-1>", self.on_finish_release)
 
         control_slider_frame = ctk.CTkFrame(operation_frame)
-        control_slider_frame.grid(row=1, column=0, sticky="")
+        control_slider_frame.grid(row=2, column=0, sticky="")
         control_slider_frame.grid_columnconfigure(0, weight=1)
         control_slider_frame.grid_columnconfigure(1, weight=1)
 
@@ -710,13 +734,13 @@ class MainGUI(ctk.CTk):
         self.right_hand_current_slider.bind("<ButtonRelease-1>", self.on_right_slider_release)
 
         onoff_frame = ctk.CTkFrame(operation_frame)
-        onoff_frame.grid(row=2, column=0, pady=5, sticky="nsew")
+        onoff_frame.grid(row=3, column=0, pady=5, sticky="nsew")
         self.onoff_label = ctk.CTkLabel(onoff_frame, text="Tracer ON,OFF : ---", font=ctk.CTkFont(size=28, weight="bold"))
         self.onoff_label.pack(padx=10, pady=15)
         self.last_onoff_version = -1
 
         mode_frame = ctk.CTkFrame(operation_frame)
-        mode_frame.grid(row=3, column=0, pady=5, sticky="nsew")
+        mode_frame.grid(row=4, column=0, pady=5, sticky="nsew")
         self.mode_label = ctk.CTkLabel(mode_frame, text="Mode : ---", font=ctk.CTkFont(size=28, weight="bold"))
         self.mode_label.pack(padx=10, pady=15)
         self.last_mode_version = -1
@@ -727,6 +751,40 @@ class MainGUI(ctk.CTk):
         self.update_mode_label()
 
         self.protocol("WM_DELETE_WINDOW", self.on_close)
+
+    def get_config_path(self):
+        script_dir = Path(__file__).resolve().parent
+        return script_dir.parent / "config" / "ssh_config.json"
+
+    def load_ssh_config(self):
+        default_config = {
+            "robot_ssh_target": "",
+            "robot_ssh_password": "",
+        }
+
+        config_path = self.get_config_path()
+        try:
+            if config_path.exists():
+                with open(config_path, "r", encoding="utf-8") as f:
+                    loaded = json.load(f)
+                default_config.update(loaded)
+        except Exception as e:
+            print(f"Failed to load ssh config: {e}")
+        return default_config
+
+    def save_ssh_config(self):
+        config_path = self.get_config_path()
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+
+        config = {
+            "robot_ssh_target": self.robot_ssh_target_entry.get(),
+            "robot_ssh_password": self.robot_ssh_password_entry.get(),
+        }
+        try:
+            with open(config_path, "w", encoding="utf-8") as f:
+                json.dump(config, f, indent=4)
+        except Exception as e:
+            print(f"Failed to save ssh config: {e}")
 
     def update_skeleton(self):
         ok = self.node.compute_fk()
@@ -766,26 +824,29 @@ class MainGUI(ctk.CTk):
             if self.finish_requested:
                 return
 
+        ssh_target = self.robot_ssh_target_entry.get().strip()
+        ssh_password = self.robot_ssh_password_entry.get()
+
         threading.Thread(
             target=self.start_robot_bringup,
+            args=(ssh_target, ssh_password),
             daemon=True
         ).start()
         print("Clicked Robot Bring Up Button")
 
-    def start_robot_bringup(self):
-        #SSHパスワード暫定対応
+    def start_robot_bringup(self, ssh_target, ssh_password):
         try:
             result = subprocess.run(
                 [
                     "sshpass",
                     "-p",
-                    "seed",
+                    ssh_password,
                     "ssh",
                     "-o",
                     "ConnectTimeout=1",
                     "-o",
                     "StrictHostKeyChecking=no",
-                    "seed@192.168.0.50",
+                    ssh_target,
                     "echo connected"
                 ],
                 capture_output=True,
@@ -805,6 +866,9 @@ class MainGUI(ctk.CTk):
         if self.is_finish_requested():
             return
 
+        quoted_password = shlex.quote(ssh_password)
+        quoted_target = shlex.quote(ssh_target)
+
         self.robot_process = subprocess.Popen(
             [
                 "gnome-terminal",
@@ -812,9 +876,9 @@ class MainGUI(ctk.CTk):
                 "bash",
                 "-lc",
                 (
-                    "sshpass -p 'seed' "
+                    f"sshpass -p {quoted_password} "
                     "ssh -o StrictHostKeyChecking=no "
-                    "seed@192.168.0.50 "
+                    f"{quoted_target} "
                     "'source /opt/ros/jazzy/setup.bash && "
                     "source ~/ros2/jazzy/install/setup.bash && "
                     "ros2 launch motion_tracer_ros2 robot_bringup.launch.py simulation:=false display_rviz2:=false'"
@@ -883,6 +947,9 @@ class MainGUI(ctk.CTk):
         with self.process_lock:
             self.finish_requested = True
 
+        ssh_target = self.robot_ssh_target_entry.get().strip()
+        ssh_password = self.robot_ssh_password_entry.get()
+
         subprocess.run(
             [
                 "killall",
@@ -891,20 +958,19 @@ class MainGUI(ctk.CTk):
             ]
         )
 
-        #SSHパスワード暫定対応
         ok_ssh = True
         try:
             result = subprocess.run(
                 [
                     "sshpass",
                     "-p",
-                    "seed",
+                    ssh_password,
                     "ssh",
                     "-o",
                     "ConnectTimeout=1",
                     "-o",
                     "StrictHostKeyChecking=no",
-                    "seed@192.168.0.50",
+                    ssh_target,
                     "echo connected"
                 ],
                 capture_output=True,
@@ -927,11 +993,11 @@ class MainGUI(ctk.CTk):
                     [
                         "sshpass",
                         "-p",
-                        "seed",
+                        ssh_password,
                         "ssh",
                         "-o",
                         "StrictHostKeyChecking=no",
-                        "seed@192.168.0.50",
+                        ssh_target,
                         "killall -SIGINT "
                         "ros2 "
                         "ros2_control_node "
@@ -1035,9 +1101,7 @@ class MainGUI(ctk.CTk):
     def cv_to_tk(self, cv_img):
         rgb = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
         rgb = cv2.resize(rgb, (960, 540))
-
         pil_img = Image.fromarray(rgb)
-
         return ImageTk.PhotoImage(pil_img)
 
     def update_images(self):
@@ -1055,9 +1119,9 @@ class MainGUI(ctk.CTk):
             version = self.node.cur_onoff_version
         if version != self.last_onoff_version:
             if cur_onoff:
-                onoff_text = "Trcaer ON"
+                onoff_text = "Trcaer  [ ON ]"
             else:
-                onoff_text = "Tracer OFF"
+                onoff_text = "Tracer  [ OFF ]"
             self.onoff_label.configure(text=onoff_text)
             self.last_onoff_version = version
         self.after(50, self.update_onoff_label)
@@ -1068,14 +1132,15 @@ class MainGUI(ctk.CTk):
             version = self.node.cur_mode_version
         if version != self.last_mode_version:
             if cur_mode:
-                mode_text = "[ Mover & Lifter ]  Mode"
+                mode_text = "Mode  [ Mover & Lifter ]"
             else:
-                mode_text = "[ Neck & Waist ]  Mode"
+                mode_text = "Mode  [ Neck & Waist ]"
             self.mode_label.configure(text=mode_text)
             self.last_mode_version = version
         self.after(50, self.update_mode_label)
-    
+
     def on_close(self):
+        self.save_ssh_config()
         self.finish_all()
         self.skeleton_viewer.cleanup_gl()
         self.destroy()
