@@ -41,9 +41,11 @@ class FollowerSubscriber(Node):
 
         self.lock = threading.Lock()
 
-        self.mode_lock = threading.Lock()
+        self.notify_lock = threading.Lock()
         self.cur_mode = False
         self.cur_mode_version = 0
+        self.cur_onoff = False
+        self.cur_onoff_version = 0
 
         self.images = {
             "camera1": None,
@@ -90,6 +92,19 @@ class FollowerSubscriber(Node):
             '/tracer_mode',
             self.notify_Tracer_mode_callback,
             mode_qos
+        )
+
+        on_tracer_qos = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        )
+        self.create_subscription(
+            Bool,
+            '/on_tracer',
+            self.notify_on_Tracer_callback,
+            on_tracer_qos
         )
 
         self.current_joint_state = None
@@ -170,12 +185,20 @@ class FollowerSubscriber(Node):
             self.joint_state_count += 1
 
     def notify_Tracer_mode_callback(self, msg):
-        with self.mode_lock:
+        with self.notify_lock:
             self.cur_mode = bool(msg.data)
             if self.cur_mode:
                 self.cur_mode_version = 1
             else:
                 self.cur_mode_version = 0
+
+    def notify_on_Tracer_callback(self, msg):
+        with self.notify_lock:
+            self.cur_onoff = bool(msg.data)
+            if self.cur_onoff:
+                self.cur_onoff_version = 1
+            else:
+                self.cur_onoff_version = 0
 
     def get_link_transform(self, link_name):
         frame_id = self.model.getFrameId(link_name)
@@ -647,6 +670,7 @@ class MainGUI(ctk.CTk):
         operation_frame.grid_rowconfigure(0, weight=1)
         operation_frame.grid_rowconfigure(1, weight=1)
         operation_frame.grid_rowconfigure(2, weight=0)
+        operation_frame.grid_rowconfigure(3, weight=0)
         operation_frame.grid_columnconfigure(0, weight=1)
 
         control_button_frame = ctk.CTkFrame(operation_frame)
@@ -685,14 +709,21 @@ class MainGUI(ctk.CTk):
         self.right_hand_current_slider.grid(row=1, column=1, padx=10)
         self.right_hand_current_slider.bind("<ButtonRelease-1>", self.on_right_slider_release)
 
+        onoff_frame = ctk.CTkFrame(operation_frame)
+        onoff_frame.grid(row=2, column=0, pady=5, sticky="nsew")
+        self.onoff_label = ctk.CTkLabel(onoff_frame, text="Tracer ON,OFF : ---", font=ctk.CTkFont(size=28, weight="bold"))
+        self.onoff_label.pack(padx=10, pady=15)
+        self.last_onoff_version = -1
+
         mode_frame = ctk.CTkFrame(operation_frame)
-        mode_frame.grid(row=2, column=0, sticky="nsew")
+        mode_frame.grid(row=3, column=0, pady=5, sticky="nsew")
         self.mode_label = ctk.CTkLabel(mode_frame, text="Mode : ---", font=ctk.CTkFont(size=28, weight="bold"))
         self.mode_label.pack(padx=10, pady=15)
         self.last_mode_version = -1
 
         self.update_images()
         self.after(100,self.update_skeleton)
+        self.update_onoff_label()
         self.update_mode_label()
 
         self.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -1018,8 +1049,21 @@ class MainGUI(ctk.CTk):
                     self.labels[cam].image = tk_img
         self.after(30, self.update_images)
 
+    def update_onoff_label(self):
+        with self.node.notify_lock:
+            cur_onoff = self.node.cur_onoff
+            version = self.node.cur_onoff_version
+        if version != self.last_onoff_version:
+            if cur_onoff:
+                onoff_text = "Trcaer ON"
+            else:
+                onoff_text = "Tracer OFF"
+            self.onoff_label.configure(text=onoff_text)
+            self.last_onoff_version = version
+        self.after(50, self.update_onoff_label)
+
     def update_mode_label(self):
-        with self.node.mode_lock:
+        with self.node.notify_lock:
             cur_mode = self.node.cur_mode
             version = self.node.cur_mode_version
         if version != self.last_mode_version:
