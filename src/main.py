@@ -85,7 +85,7 @@ class FollowerSubscriber(Node):
             qos_profile_sensor_data
         )
 
-        mode_qos = QoSProfile(
+        notify_qos = QoSProfile(
             history=HistoryPolicy.KEEP_LAST,
             depth=1,
             reliability=ReliabilityPolicy.RELIABLE,
@@ -95,20 +95,14 @@ class FollowerSubscriber(Node):
             Bool,
             '/tracer_mode',
             self.notify_Tracer_mode_callback,
-            mode_qos
+            notify_qos
         )
 
-        on_tracer_qos = QoSProfile(
-            history=HistoryPolicy.KEEP_LAST,
-            depth=1,
-            reliability=ReliabilityPolicy.RELIABLE,
-            durability=DurabilityPolicy.TRANSIENT_LOCAL,
-        )
         self.create_subscription(
             Bool,
             '/on_tracer',
             self.notify_on_Tracer_callback,
-            on_tracer_qos
+            notify_qos
         )
 
         self.current_joint_state = None
