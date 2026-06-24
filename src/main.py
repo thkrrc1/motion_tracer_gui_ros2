@@ -105,6 +105,12 @@ class FollowerSubscriber(Node):
             notify_qos
         )
 
+        self.lifter_forward_lean_publisher = self.create_publisher(
+            Bool,
+            '/on_lifter_forward_lean',
+            notify_qos
+        )
+
         self.current_joint_state = None
         self.joint_state_count = 0
         self.urdf_joints = {}
@@ -197,6 +203,11 @@ class FollowerSubscriber(Node):
                 self.cur_onoff_version = 1
             else:
                 self.cur_onoff_version = 0
+
+    def notify_lifter_forward_lean(self, enabled):
+        msg = Bool()
+        msg.data = bool(enabled)
+        self.lifter_forward_lean_publisher.publish(msg)
 
     def get_link_transform(self, link_name):
         frame_id = self.model.getFrameId(link_name)
@@ -672,6 +683,7 @@ class MainGUI(ctk.CTk):
         operation_frame.grid_rowconfigure(2, weight=1)
         operation_frame.grid_rowconfigure(3, weight=0)
         operation_frame.grid_rowconfigure(4, weight=0)
+        operation_frame.grid_rowconfigure(5, weight=0)
         operation_frame.grid_columnconfigure(0, weight=1)
 
         ssh_config_frame = ctk.CTkFrame(operation_frame)
@@ -727,14 +739,22 @@ class MainGUI(ctk.CTk):
         self.right_hand_current_slider.grid(row=1, column=1, padx=10)
         self.right_hand_current_slider.bind("<ButtonRelease-1>", self.on_right_slider_release)
 
+        switch_frame = ctk.CTkFrame(operation_frame)
+        switch_frame.grid(row=3, column=0, sticky="")
+        lifter_forward_lean_label = ctk.CTkLabel(switch_frame, text="lifter forward lean")
+        lifter_forward_lean_label.grid(row=0, column=0, padx=10)
+        self.lifter_forward_lean_switch = ctk.CTkSwitch(switch_frame, text="OFF", command=self.on_lifter_forward_lean_toggle, onvalue=True, offvalue=False, width=80)
+        self.lifter_forward_lean_switch.grid(row=1, column=0, padx=10)
+        self.lifter_forward_lean_switch.deselect()
+
         onoff_frame = ctk.CTkFrame(operation_frame)
-        onoff_frame.grid(row=3, column=0, pady=5, sticky="nsew")
+        onoff_frame.grid(row=4, column=0, pady=5, sticky="nsew")
         self.onoff_label = ctk.CTkLabel(onoff_frame, text="Tracer ON,OFF : ---", font=ctk.CTkFont(size=28, weight="bold"))
         self.onoff_label.pack(padx=10, pady=15)
         self.last_onoff_version = -1
 
         mode_frame = ctk.CTkFrame(operation_frame)
-        mode_frame.grid(row=4, column=0, pady=5, sticky="nsew")
+        mode_frame.grid(row=5, column=0, pady=5, sticky="nsew")
         self.mode_label = ctk.CTkLabel(mode_frame, text="Mode : ---", font=ctk.CTkFont(size=28, weight="bold"))
         self.mode_label.pack(padx=10, pady=15)
         self.last_mode_version = -1
@@ -1091,6 +1111,14 @@ class MainGUI(ctk.CTk):
             )
         except Exception as e:
             print(f"Service call failed: {e}")
+
+    def on_lifter_forward_lean_toggle(self):
+        enabled = bool(self.lifter_forward_lean_switch.get())
+        if enabled:
+            self.lifter_forward_lean_switch.configure(text="ON")
+        else:
+            self.lifter_forward_lean_switch.configure(text="OFF")
+        self.node.notify_lifter_forward_lean(enabled)
 
     def cv_to_tk(self, cv_img):
         rgb = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
