@@ -634,6 +634,7 @@ class MainGUI(ctk.CTk):
         self.camera_node = camera_node
         self.robot_node = robot_node
 
+        self.camera_process = None
         self.robot_process = None
         self.tracer_process = None
 
@@ -907,6 +908,28 @@ class MainGUI(ctk.CTk):
         quoted_password = shlex.quote(ssh_password)
         quoted_target = shlex.quote(ssh_target)
 
+        self.camera_process = subprocess.Popen(
+            [
+                "gnome-terminal",
+                "--",
+                "bash",
+                "-lc",
+                (
+                    f"sshpass -p {quoted_password} "
+                    "ssh -o StrictHostKeyChecking=no "
+                    f"{quoted_target} "
+                    "'export ROS_DOMAIN_ID=10 && "
+                    "source /opt/ros/jazzy/setup.bash && "
+                    "source ~/ros2/jazzy/install/setup.bash && "
+                    "ros2 launch usb_cam camera.launch.py'"
+                )
+            ],
+            preexec_fn=os.setsid
+        )
+
+        if self.is_finish_requested():
+            return
+
         self.robot_process = subprocess.Popen(
             [
                 "gnome-terminal",
@@ -1072,6 +1095,14 @@ class MainGUI(ctk.CTk):
             except subprocess.TimeoutExpired:
                 self.robot_process.kill()
             self.robot_process = None
+
+        if self.camera_process is not None:
+            try:
+                self.camera_process.terminate()
+                self.camera_process.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                self.camera_process.kill()
+            self.camera_process = None
 
         self.finish_requested = False
         print("All System Finished")
