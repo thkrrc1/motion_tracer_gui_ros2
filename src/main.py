@@ -11,14 +11,10 @@ from rclpy.node import Node
 from sensor_msgs.msg import CompressedImage as RosImage
 import numpy as np
 from rclpy.qos import qos_profile_sensor_data
-from rclpy.executors import ExternalShutdownException
+from rclpy.executors import ExternalShutdownException, SingleThreadedExecutor
 from std_msgs.msg import Bool
-from rclpy.qos import (
-    QoSProfile,
-    HistoryPolicy,
-    ReliabilityPolicy,
-    DurabilityPolicy,
-)
+from rclpy.qos import QoSProfile, HistoryPolicy, ReliabilityPolicy, DurabilityPolicy
+from rclpy.context import Context
 
 from sensor_msgs.msg import JointState
 from tf2_ros import Buffer
@@ -39,44 +35,82 @@ import json
 import shlex
 from pathlib import Path
 
-class FollowerSubscriber(Node):
-    def __init__(self):
-        super().__init__('image_subscriber')
+image_qos = QoSProfile(
+    history=HistoryPolicy.KEEP_LAST,
+    depth=1,
+    reliability=ReliabilityPolicy.BEST_EFFORT,
+    durability=DurabilityPolicy.VOLATILE,
+)
+CAMERA_DOMAIN_ID = 10
+ROBOT_DOMAIN_ID = 20
+
+
+class CameraSubscriber(Node):
+    def __init__(self, context):
+        super().__init__(
+            'image_subscriber',
+            context=context
+        )
 
         self.lock = threading.Lock()
-
-        self.notify_lock = threading.Lock()
-        self.cur_mode = False
-        self.cur_mode_version = 0
-        self.cur_onoff = False
-        self.cur_onoff_version = 0
 
         self.images = {
             "camera1": None,
             "camera2": None,
-            "camera3": None
+            "camera3": None,
         }
 
         self.create_subscription(
             RosImage,
             '/camera1/image_raw/compressed',
             lambda msg: self.image_callback(msg, "camera1"),
-            qos_profile_sensor_data
+            image_qos
         )
 
         self.create_subscription(
             RosImage,
             '/camera2/image_raw/compressed',
             lambda msg: self.image_callback(msg, "camera2"),
-            qos_profile_sensor_data
+            image_qos
         )
 
         self.create_subscription(
             RosImage,
             '/camera3/image_raw/compressed',
             lambda msg: self.image_callback(msg, "camera3"),
-            qos_profile_sensor_data
+            image_qos
         )
+
+    def image_callback(self, msg, cam_name):
+        # self.get_logger().info(f"{cam_name} frame received")
+        try:
+            np_arr = np.frombuffer(msg.data, np.uint8)
+            cv_img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+            if cv_img is None:
+                self.get_logger().warning(f"Failed to decode image: {cam_name}")
+                return
+            with self.lock:
+                self.images[cam_name] = cv_img
+        except Exception as e:
+            self.get_logger().error(f"{cam_name}: {e}")
+
+
+class RobotSubscriber(Node):
+    def __init__(self, context):
+        super().__init__('robot_subscriber', context=context)
+
+        self.lock = threading.Lock()
+        self.notify_lock = threading.Lock()
+
+        self.cur_mode = False
+        self.cur_mode_version = 0
+        self.cur_onoff = False
+        self.cur_onoff_version = 0
+
+        self.current_joint_state = None
+        self.joint_state_count = 0
+        self.urdf_joints = {}
+        self.current_name_to_pos = {}
 
         self.create_subscription(
             JointState,
@@ -91,6 +125,7 @@ class FollowerSubscriber(Node):
             reliability=ReliabilityPolicy.RELIABLE,
             durability=DurabilityPolicy.TRANSIENT_LOCAL,
         )
+
         self.create_subscription(
             Bool,
             '/tracer_mode',
@@ -111,11 +146,6 @@ class FollowerSubscriber(Node):
             notify_qos
         )
 
-        self.current_joint_state = None
-        self.joint_state_count = 0
-        self.urdf_joints = {}
-        self.current_name_to_pos = {}
-
         urdf_path = (
             "/home/seed/ros2/jazzy/src/seed_robot_ros2_pkg/robots/noid_lifter_mover/model/noid_lifter_mover.urdf"
         )
@@ -125,10 +155,7 @@ class FollowerSubscriber(Node):
         self.data = self.model.createData()
 
         self.tf_buffer = Buffer()
-        self.tf_listener = TransformListener(
-            self.tf_buffer,
-            self
-        )
+        self.tf_listener = TransformListener(self.tf_buffer, self)
 
         tree = ET.parse(urdf_path)
         root = tree.getroot()
@@ -169,16 +196,6 @@ class FollowerSubscriber(Node):
                 "rpy": np.array(rpy, dtype=float),
                 "axis": np.array(axis_xyz, dtype=float),
             }
-
-    def image_callback(self, msg, cam_name):
-        # self.get_logger().info(f"{cam_name} frame received")
-        try:
-            np_arr = np.frombuffer(msg.data, np.uint8)
-            cv_img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
-            with self.lock:
-                self.images[cam_name] = cv_img
-        except Exception as e:
-            self.get_logger().error(f"{cam_name}: {e}")
 
     def joint_callback(self, msg):
         with self.lock:
@@ -611,10 +628,11 @@ class SkeletonViewer(OpenGLFrame):
 
 
 class MainGUI(ctk.CTk):
-    def __init__(self, ros_node):
+    def __init__(self, camera_node, robot_node):
         super().__init__()
 
-        self.node = ros_node
+        self.camera_node = camera_node
+        self.robot_node = robot_node
 
         self.robot_process = None
         self.tracer_process = None
@@ -673,7 +691,7 @@ class MainGUI(ctk.CTk):
         viewer_frame = ctk.CTkFrame(control_frame)
         viewer_frame.grid(row=0, column=0, sticky="nsew")
 
-        self.skeleton_viewer = (SkeletonViewer(viewer_frame, self.node))
+        self.skeleton_viewer = (SkeletonViewer(viewer_frame, robot_node))
         self.skeleton_viewer.pack(fill="both", expand=True)
 
         operation_frame = ctk.CTkFrame(control_frame)
@@ -801,11 +819,16 @@ class MainGUI(ctk.CTk):
             print(f"Failed to save ssh config: {e}")
 
     def update_skeleton(self):
-        ok = self.node.compute_fk()
+        ok = self.robot_node.compute_fk()
         if ok:
             self.skeleton_viewer.update_vbo()
             self.skeleton_viewer.redraw()
         self.after(16, self.update_skeleton)
+
+    def make_ros_env(domain_id):
+        env = os.environ.copy()
+        env["ROS_DOMAIN_ID"] = str(domain_id)
+        return env
 
     def wait_for_robot_current_service(self, timeout_sec=15):
         start_time = time.time()
@@ -821,7 +844,8 @@ class MainGUI(ctk.CTk):
                     ],
                     capture_output=True,
                     text=True,
-                    timeout=3
+                    timeout=3,
+                    env=self.make_ros_env(ROBOT_DOMAIN_ID)
                 )
                 if "/aero_controller/set_current" in result.stdout:
                     return True
@@ -893,6 +917,7 @@ class MainGUI(ctk.CTk):
                     f"sshpass -p {quoted_password} "
                     "ssh -o StrictHostKeyChecking=no "
                     f"{quoted_target} "
+                    "'export ROS_DOMAIN_ID=20 && "
                     "'source /opt/ros/jazzy/setup.bash && "
                     "source ~/ros2/jazzy/install/setup.bash && "
                     "ros2 launch motion_tracer_ros2 robot_bringup.launch.py simulation:=false display_rviz2:=false'"
@@ -935,6 +960,7 @@ class MainGUI(ctk.CTk):
                 "--",
                 "bash",
                 "-lc",
+                "export ROS_DOMAIN_ID=20 && "
                 "source /opt/ros/jazzy/setup.bash && "
                 "source /home/seed/ros2/jazzy/install/setup.bash && "
                 "ros2 launch motion_tracer_ros2 tracer_bringup.launch.py"
@@ -1076,7 +1102,8 @@ class MainGUI(ctk.CTk):
                         "min: [1]}"
                     )
                 ],
-                check=True
+                check=True,
+                env=self.make_ros_env(ROBOT_DOMAIN_ID)
             )
         except Exception as e:
             print(f"Service call failed: {e}")
@@ -1107,7 +1134,8 @@ class MainGUI(ctk.CTk):
                         "min: [1]}"
                     )
                 ],
-                check=True
+                check=True,
+                env=self.make_ros_env(ROBOT_DOMAIN_ID)
             )
         except Exception as e:
             print(f"Service call failed: {e}")
@@ -1118,7 +1146,7 @@ class MainGUI(ctk.CTk):
             self.lifter_forward_lean_switch.configure(text="ON")
         else:
             self.lifter_forward_lean_switch.configure(text="OFF")
-        self.node.notify_lifter_forward_lean(enabled)
+        self.robot_node.notify_lifter_forward_lean(enabled)
 
     def cv_to_tk(self, cv_img):
         rgb = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
@@ -1127,18 +1155,21 @@ class MainGUI(ctk.CTk):
         return ImageTk.PhotoImage(pil_img)
 
     def update_images(self):
-        with self.node.lock:
-            for cam, img in self.node.images.items():
-                if img is not None:
-                    tk_img = self.cv_to_tk(img)
-                    self.labels[cam].configure(image=tk_img,text="")
-                    self.labels[cam].image = tk_img
+        with self.camera_node.lock:
+            images = {name: image.copy()
+                for name, image in self.camera_node.images.items()
+                if image is not None
+            }
+        for cam, img in images.items():
+            tk_img = self.cv_to_tk(img)
+            self.labels[cam].configure(image=tk_img, text="")
+            self.labels[cam].image = tk_img
         self.after(30, self.update_images)
 
     def update_onoff_label(self):
-        with self.node.notify_lock:
-            cur_onoff = self.node.cur_onoff
-            version = self.node.cur_onoff_version
+        with self.robot_node.notify_lock:
+            cur_onoff = self.robot_node.cur_onoff
+            version = self.robot_node.cur_onoff_version
         if version != self.last_onoff_version:
             if cur_onoff:
                 onoff_text = "Trcaer  [ ON ]"
@@ -1149,9 +1180,9 @@ class MainGUI(ctk.CTk):
         self.after(50, self.update_onoff_label)
 
     def update_mode_label(self):
-        with self.node.notify_lock:
-            cur_mode = self.node.cur_mode
-            version = self.node.cur_mode_version
+        with self.robot_node.notify_lock:
+            cur_mode = self.robot_node.cur_mode
+            version = self.robot_node.cur_mode_version
         if version != self.last_mode_version:
             if cur_mode:
                 mode_text = "Mode  [ Mover & Lifter ]"
@@ -1174,20 +1205,64 @@ def ros_spin(node):
     except ExternalShutdownException:
         pass
 
+def spin_executor(executor):
+    try:
+        executor.spin()
+    except ExternalShutdownException:
+        pass
+    except Exception as e:
+        print(f"ROS executor error: {e}")
+
 def main():
-    rclpy.init()
-    node = FollowerSubscriber()
-    spin_thread = threading.Thread(target=ros_spin, args=(node,), daemon=True)
-    spin_thread.start()
-    app = MainGUI(node)
+    camera_context = Context()
+    robot_context = Context()
+
+    camera_node = None
+    robot_node = None
+
+    camera_executor = None
+    robot_executor = None
+
+    camera_thread = None
+    robot_thread = None
 
     try:
+        rclpy.init(context=camera_context, domain_id=CAMERA_DOMAIN_ID)
+        rclpy.init(context=robot_context, domain_id=ROBOT_DOMAIN_ID)
+
+        camera_node = CameraSubscriber(camera_context)
+        robot_node = RobotSubscriber(robot_context)
+
+        camera_executor = SingleThreadedExecutor(context=camera_context)
+        robot_executor = SingleThreadedExecutor(context=robot_context)
+
+        camera_executor.add_node(camera_node)
+        robot_executor.add_node(robot_node)
+
+        camera_thread = threading.Thread(target=spin_executor, args=(camera_executor,), daemon=True)
+        robot_thread = threading.Thread(target=spin_executor, args=(robot_executor,),daemon=True)
+
+        camera_thread.start()
+        robot_thread.start()
+
+        app = MainGUI(camera_node=camera_node, robot_node=robot_node)
         app.mainloop()
+
     finally:
-        if rclpy.ok():
-            rclpy.shutdown()
-        spin_thread.join()
-        node.destroy_node()
+        if camera_executor is not None:
+            camera_executor.shutdown(timeout_sec=2.0)
+        if robot_executor is not None:
+            robot_executor.shutdown(timeout_sec=2.0)
+        if camera_thread is not None:
+            camera_thread.join(timeout=2.0)
+        if robot_thread is not None:
+            robot_thread.join(timeout=2.0)
+        if camera_node is not None:
+            camera_node.destroy_node()
+        if robot_node is not None:
+            robot_node.destroy_node()
+        camera_context.try_shutdown()
+        robot_context.try_shutdown()
 
 if __name__ == '__main__':
     main()
