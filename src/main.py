@@ -918,7 +918,7 @@ class MainGUI(ctk.CTk):
                     "ssh -o StrictHostKeyChecking=no "
                     f"{quoted_target} "
                     "'export ROS_DOMAIN_ID=20 && "
-                    "'source /opt/ros/jazzy/setup.bash && "
+                    "source /opt/ros/jazzy/setup.bash && "
                     "source ~/ros2/jazzy/install/setup.bash && "
                     "ros2 launch motion_tracer_ros2 robot_bringup.launch.py simulation:=false display_rviz2:=false'"
                 )
