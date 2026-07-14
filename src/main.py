@@ -826,7 +826,7 @@ class MainGUI(ctk.CTk):
             self.skeleton_viewer.redraw()
         self.after(16, self.update_skeleton)
 
-    def make_ros_env(domain_id):
+    def make_ros_env(self, domain_id):
         env = os.environ.copy()
         env["ROS_DOMAIN_ID"] = str(domain_id)
         return env
