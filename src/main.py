@@ -146,6 +146,12 @@ class RobotSubscriber(Node):
             notify_qos
         )
 
+        self.force_feedback_publisher = self.create_publisher(
+            Bool,
+            '/on_force_feedback',
+            notify_qos
+        )
+
         urdf_path = (
             "/home/seed/ros2/jazzy/src/seed_robot_ros2_pkg/robots/noid_lifter_mover/model/noid_lifter_mover.urdf"
         )
@@ -225,6 +231,11 @@ class RobotSubscriber(Node):
         msg = Bool()
         msg.data = bool(enabled)
         self.lifter_forward_lean_publisher.publish(msg)
+
+    def notify_force_feedback(self, enabled):
+        msg = Bool()
+        msg.data = bool(enabled)
+        self.force_feedback_publisher.publish(msg)
 
     def get_link_transform(self, link_name):
         frame_id = self.model.getFrameId(link_name)
@@ -759,11 +770,22 @@ class MainGUI(ctk.CTk):
         self.right_hand_current_slider.bind("<ButtonRelease-1>", self.on_right_slider_release)
 
         switch_frame = ctk.CTkFrame(operation_frame)
-        switch_frame.grid(row=3, column=0, sticky="")
-        lifter_forward_lean_label = ctk.CTkLabel(switch_frame, text="lifter forward lean")
-        lifter_forward_lean_label.grid(row=0, column=0, padx=10)
-        self.lifter_forward_lean_switch = ctk.CTkSwitch(switch_frame, text="OFF", command=self.on_lifter_forward_lean_toggle, onvalue=True, offvalue=False, width=80)
-        self.lifter_forward_lean_switch.grid(row=1, column=0, padx=10)
+        switch_frame.grid(row=3, column=0, pady=5, sticky="")
+
+        force_feedback_frame = ctk.CTkFrame(switch_frame)
+        force_feedback_frame.grid(row=0, column=0, padx=5, pady=5, sticky="")
+        force_feedback_label = ctk.CTkLabel(force_feedback_frame, text="force feedback")
+        force_feedback_label.grid(row=0, column=0)
+        self.force_feedback_switch = ctk.CTkSwitch(force_feedback_frame, text="ON", command=self.on_force_feedback_toggle, onvalue=True, offvalue=False, width=80)
+        self.force_feedback_switch.grid(row=1, column=0)
+        self.force_feedback_switch.select()
+
+        lifter_forward_lean_frame = ctk.CTkFrame(switch_frame)
+        lifter_forward_lean_frame.grid(row=0, column=1, padx=5, pady=5, sticky="")
+        lifter_forward_lean_label = ctk.CTkLabel(lifter_forward_lean_frame, text="lifter forward lean")
+        lifter_forward_lean_label.grid(row=0, column=0)
+        self.lifter_forward_lean_switch = ctk.CTkSwitch(lifter_forward_lean_frame, text="OFF", command=self.on_lifter_forward_lean_toggle, onvalue=True, offvalue=False, width=80)
+        self.lifter_forward_lean_switch.grid(row=1, column=0)
         self.lifter_forward_lean_switch.deselect()
 
         onoff_frame = ctk.CTkFrame(operation_frame)
@@ -1178,6 +1200,14 @@ class MainGUI(ctk.CTk):
         else:
             self.lifter_forward_lean_switch.configure(text="OFF")
         self.robot_node.notify_lifter_forward_lean(enabled)
+
+    def on_force_feedback_toggle(self):
+        enabled = bool(self.force_feedback_switch.get())
+        if enabled:
+            self.force_feedback_switch.configure(text="ON")
+        else:
+            self.force_feedback_switch.configure(text="OFF")
+        self.robot_node.notify_force_feedback(enabled)
 
     def cv_to_tk(self, cv_img):
         rgb = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
