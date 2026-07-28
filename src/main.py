@@ -140,15 +140,21 @@ class RobotSubscriber(Node):
             notify_qos
         )
 
+        self.force_feedback_publisher = self.create_publisher(
+            Bool,
+            '/on_force_feedback',
+            notify_qos
+        )
+
         self.lifter_forward_lean_publisher = self.create_publisher(
             Bool,
             '/on_lifter_forward_lean',
             notify_qos
         )
 
-        self.force_feedback_publisher = self.create_publisher(
+        self.assisted_teleop_publisher = self.create_publisher(
             Bool,
-            '/on_force_feedback',
+            '/on_assisted_teleop',
             notify_qos
         )
 
@@ -227,15 +233,20 @@ class RobotSubscriber(Node):
             else:
                 self.cur_onoff_version = 0
 
+    def notify_force_feedback(self, enabled):
+        msg = Bool()
+        msg.data = bool(enabled)
+        self.force_feedback_publisher.publish(msg)
+
     def notify_lifter_forward_lean(self, enabled):
         msg = Bool()
         msg.data = bool(enabled)
         self.lifter_forward_lean_publisher.publish(msg)
 
-    def notify_force_feedback(self, enabled):
-        msg = Bool()
-        msg.data = bool(enabled)
-        self.force_feedback_publisher.publish(msg)
+    def notify_assisted_teleop(self, enabled):
+            msg = Bool()
+            msg.data = bool(enabled)
+            self.assisted_teleop_publisher.publish(msg)
 
     def get_link_transform(self, link_name):
         frame_id = self.model.getFrameId(link_name)
@@ -788,6 +799,14 @@ class MainGUI(ctk.CTk):
         self.lifter_forward_lean_switch.grid(row=1, column=0)
         self.lifter_forward_lean_switch.deselect()
 
+        assisted_teleop_frame = ctk.CTkFrame(switch_frame)
+        assisted_teleop_frame.grid(row=0, column=2, padx=5, pady=5, sticky="")
+        assisted_teleop_label = ctk.CTkLabel(assisted_teleop_frame, text="assisted teleop")
+        assisted_teleop_label.grid(row=0, column=0)
+        self.assisted_teleop_switch = ctk.CTkSwitch(assisted_teleop_frame, text="OFF", command=self.on_assisted_teleop_toggle, onvalue=True, offvalue=False, width=80)
+        self.assisted_teleop_switch.grid(row=1, column=0)
+        self.assisted_teleop_switch.deselect()
+
         onoff_frame = ctk.CTkFrame(operation_frame)
         onoff_frame.grid(row=4, column=0, pady=5, sticky="nsew")
         self.onoff_label = ctk.CTkLabel(onoff_frame, text="Tracer ON,OFF : ---", font=ctk.CTkFont(size=28, weight="bold"))
@@ -1193,6 +1212,14 @@ class MainGUI(ctk.CTk):
         except Exception as e:
             print(f"Service call failed: {e}")
 
+    def on_force_feedback_toggle(self):
+        enabled = bool(self.force_feedback_switch.get())
+        if enabled:
+            self.force_feedback_switch.configure(text="ON")
+        else:
+            self.force_feedback_switch.configure(text="OFF")
+        self.robot_node.notify_force_feedback(enabled)
+
     def on_lifter_forward_lean_toggle(self):
         enabled = bool(self.lifter_forward_lean_switch.get())
         if enabled:
@@ -1201,13 +1228,13 @@ class MainGUI(ctk.CTk):
             self.lifter_forward_lean_switch.configure(text="OFF")
         self.robot_node.notify_lifter_forward_lean(enabled)
 
-    def on_force_feedback_toggle(self):
-        enabled = bool(self.force_feedback_switch.get())
+    def on_assisted_teleop_toggle(self):
+        enabled = bool(self.assisted_teleop_switch.get())
         if enabled:
-            self.force_feedback_switch.configure(text="ON")
+            self.assisted_teleop_switch.configure(text="ON")
         else:
-            self.force_feedback_switch.configure(text="OFF")
-        self.robot_node.notify_force_feedback(enabled)
+            self.assisted_teleop_switch.configure(text="OFF")
+        self.robot_node.notify_assisted_teleop(enabled)
 
     def cv_to_tk(self, cv_img):
         rgb = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
