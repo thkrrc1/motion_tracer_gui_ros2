@@ -60,6 +60,12 @@ class CameraSubscriber(Node):
             "camera3": None,
         }
 
+        self.image_versions = {
+            "camera1": 0,
+            "camera2": 0,
+            "camera3": 0,
+        }
+
         self.create_subscription(
             RosImage,
             '/camera1/image_raw/compressed',
@@ -91,6 +97,7 @@ class CameraSubscriber(Node):
                 return
             with self.lock:
                 self.images[cam_name] = cv_img
+                self.image_versions[cam_name] += 1
         except Exception as e:
             self.get_logger().error(f"{cam_name}: {e}")
 
@@ -672,6 +679,13 @@ class MainGUI(ctk.CTk):
         ctk.set_default_color_theme("blue")
 
         self.labels = {}
+
+        self.last_image_versions = {
+            "camera1": -1,
+            "camera2": -1,
+            "camera3": -1,
+        }
+
         self.left_current_percent = 30
         self.right_current_percent = 30
 
@@ -1237,22 +1251,35 @@ class MainGUI(ctk.CTk):
         self.robot_node.notify_assisted_teleop(enabled)
 
     def cv_to_tk(self, cv_img):
-        rgb = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
-        rgb = cv2.resize(rgb, (960, 540))
+        resized = cv2.resize(cv_img, (960, 540), interpolation=cv2.INTER_AREA)
+        rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
         pil_img = Image.fromarray(rgb)
         return ImageTk.PhotoImage(pil_img)
 
     def update_images(self):
         with self.camera_node.lock:
-            images = {name: image.copy()
-                for name, image in self.camera_node.images.items()
-                if image is not None
+            updated_images = {
+                name: (
+                    self.camera_node.images[name],
+                    self.camera_node.image_versions[name]
+                )
+                for name in self.camera_node.images
+                if (
+                    self.camera_node.images[name] is not None
+                    and self.camera_node.image_versions[name]
+                    != self.last_image_versions[name]
+                )
             }
-        for cam, img in images.items():
-            tk_img = self.cv_to_tk(img)
-            self.labels[cam].configure(image=tk_img, text="")
-            self.labels[cam].image = tk_img
-        self.after(30, self.update_images)
+
+        for cam, (img, version) in updated_images.items():
+            try:
+                tk_img = self.cv_to_tk(img)
+                self.labels[cam].configure(image=tk_img, text="")
+                self.labels[cam].image = tk_img
+                self.last_image_versions[cam] = version
+            except Exception as e:
+                print(f"Failed to update image {cam}: {e}")
+        self.after(50, self.update_images)
 
     def update_onoff_label(self):
         with self.robot_node.notify_lock:
