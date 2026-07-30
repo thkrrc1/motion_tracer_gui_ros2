@@ -820,7 +820,7 @@ class MainGUI(ctk.CTk):
         self.last_mode_version = -1
 
         self.update_images()
-        self.after(100,self.update_skeleton)
+        self.after(50, self.update_skeleton)
         self.update_onoff_label()
         self.update_mode_label()
 
@@ -865,7 +865,7 @@ class MainGUI(ctk.CTk):
         if ok:
             self.skeleton_viewer.update_vbo()
             self.skeleton_viewer.redraw()
-        self.after(16, self.update_skeleton)
+        self.after(50, self.update_skeleton)
 
     def make_ros_env(self, domain_id):
         env = os.environ.copy()
