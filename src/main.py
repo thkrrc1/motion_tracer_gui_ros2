@@ -30,6 +30,7 @@ from OpenGL.GLU import *
 import subprocess
 import os
 import time
+import signal
 
 import json
 import shlex
@@ -670,6 +671,9 @@ class MainGUI(ctk.CTk):
         self.finish_requested = False
         self.process_lock = threading.Lock()
 
+        self.robot_restart_lock = threading.Lock()
+        self.tracer_restart_lock = threading.Lock()
+
         self.title("MotionTracerGUI ROS2")
         self.geometry("1920x1080")
         # self.attributes('-fullscreen',True)
@@ -910,25 +914,11 @@ class MainGUI(ctk.CTk):
             time.sleep(1.0)
         return False
 
-    def on_robot_bringup_release(self, event):
-        self.on_robot_bringup_click()
 
-    def on_robot_bringup_click(self):
-        with self.process_lock:
-            if self.finish_requested:
-                return
-
-        ssh_target = self.robot_ssh_target_entry.get().strip()
-        ssh_password = self.robot_ssh_password_entry.get()
-
-        threading.Thread(
-            target=self.start_robot_bringup,
-            args=(ssh_target, ssh_password),
-            daemon=True
-        ).start()
-        print("Clicked Robot Bring Up Button")
-
-    def start_robot_bringup(self, ssh_target, ssh_password):
+    def run_ssh_command(self, ssh_target, ssh_password, remote_command, timeout_sec=5, capture_output=True):
+        if not ssh_target:
+            print("ERROR : SSH target is empty")
+            return None
         try:
             result = subprocess.run(
                 [
@@ -937,24 +927,224 @@ class MainGUI(ctk.CTk):
                     ssh_password,
                     "ssh",
                     "-o",
-                    "ConnectTimeout=1",
+                    "ConnectTimeout=3",
                     "-o",
                     "StrictHostKeyChecking=no",
                     ssh_target,
-                    "echo connected"
+                    remote_command
                 ],
-                capture_output=True,
+                capture_output=capture_output,
                 text=True,
-                timeout=3
+                timeout=timeout_sec
+            )
+        except Exception as e:
+            print(f"ERROR : SSH command exception : {e}")
+            return None
+
+        if result.returncode != 0:
+            print("ERROR : SSH command failed")
+            if capture_output and result.stderr:
+                print(result.stderr)
+
+        return result
+
+    def check_ssh_connection(self, ssh_target, ssh_password):
+        result = self.run_ssh_command(ssh_target, ssh_password, "echo connected", timeout_sec=2, capture_output=True)
+        return result is not None and result.returncode == 0
+
+    def terminate_tracked_process(self, attribute_name, process_label, sigint_timeout=3.0, sigterm_timeout=2.0):
+        with self.process_lock:
+            process = getattr(self, attribute_name)
+            setattr(self, attribute_name, None)
+        if process is None:
+            return
+        if process.poll() is not None:
+            return
+
+        try:
+            process_group_id = os.getpgid(process.pid)
+        except ProcessLookupError:
+            return
+        try:
+            os.killpg(process_group_id, signal.SIGINT)
+            process.wait(timeout=sigint_timeout)
+            print(f"{process_label} stopped by SIGINT")
+            return
+        except subprocess.TimeoutExpired:
+            pass
+        except ProcessLookupError:
+            return
+        except Exception as e:
+            print(f"WARN : {process_label} SIGINT failed : {e}")
+
+        try:
+            os.killpg(process_group_id, signal.SIGTERM)
+            process.wait(timeout=sigterm_timeout)
+            print(f"{process_label} stopped by SIGTERM")
+            return
+        except subprocess.TimeoutExpired:
+            pass
+        except ProcessLookupError:
+            return
+        except Exception as e:
+            print(f"WARN : {process_label} SIGTERM failed : {e}")
+
+        try:
+            os.killpg(process_group_id, signal.SIGKILL)
+            process.wait(timeout=1.0)
+            print(f"{process_label} stopped by SIGKILL")
+        except ProcessLookupError:
+            pass
+        except Exception as e:
+            print(f"WARN : {process_label} SIGKILL failed : {e}")
+
+    def signal_local_launch_process(self, pattern, process_label):
+        signal_steps = (
+            ("SIGINT", 2.0),
+            ("SIGTERM", 1.0),
+        )
+
+        for signal_name, wait_sec in signal_steps:
+            result = subprocess.run(
+                ["pkill", f"-{signal_name}", "-f", pattern],
+                capture_output=True,
+                text=True
             )
 
-            if result.returncode != 0:
-                print("ERROR : SSH connection failed")
-                print(result.stderr)
+            if result.returncode not in (0, 1):
+                print(
+                    f"WARN : failed to send {signal_name} to "
+                    f"{process_label}: {result.stderr}"
+                )
+
+            time.sleep(wait_sec)
+
+            alive = subprocess.run(
+                ["pgrep", "-f", pattern],
+                capture_output=True,
+                text=True
+            )
+            if alive.returncode != 0:
                 return
 
-        except Exception as e:
-            print(f"ERROR : SSH connection exception : {e}")
+        print(f"WARN : {process_label} launch process still exists after SIGTERM")
+
+    def stop_robot_bringup(self, ssh_target, ssh_password):
+        print("Stopping Robot Bring Up processes...")
+
+        remote_stop_command = (
+            "set +e; "
+            "pkill -SIGINT -f '[r]os2 launch usb_cam camera.launch.py'; "
+            "pkill -SIGINT -f "
+            "'[r]os2 launch motion_tracer_ros2 robot_bringup.launch.py'; "
+            "sleep 2; "
+            "pkill -SIGTERM -f '[r]os2 launch usb_cam camera.launch.py'; "
+            "pkill -SIGTERM -f "
+            "'[r]os2 launch motion_tracer_ros2 robot_bringup.launch.py'; "
+            "killall -SIGINT "
+            "ros2_control_node "
+            "robot_state_publisher "
+            "rviz2 "
+            "urg_node2_node "
+            "scan_to_scan_filter_chain "
+            "init_pose_pub "
+            "static_transform_publisher "
+            "component_container "
+            "joy_linux_node "
+            "upper_controller_node "
+            "lower_controller_node "
+            "move_group "
+            "usb_cam_node_exe "
+            "camera_node "
+            "2>/dev/null; "
+            "sleep 1; "
+            "killall -SIGTERM "
+            "ros2_control_node "
+            "robot_state_publisher "
+            "rviz2 "
+            "urg_node2_node "
+            "scan_to_scan_filter_chain "
+            "init_pose_pub "
+            "static_transform_publisher "
+            "component_container "
+            "joy_linux_node "
+            "upper_controller_node "
+            "lower_controller_node "
+            "move_group "
+            "usb_cam_node_exe "
+            "camera_node "
+            "2>/dev/null; "
+            "true"
+        )
+
+        if ssh_target:
+            result = self.run_ssh_command(ssh_target, ssh_password, remote_stop_command, timeout_sec=5, capture_output=True)
+            if result is None or result.returncode != 0:
+                print("WARN : Remote Robot/Camera stop command was not completed")
+        else:
+            print("WARN : Robot SSH target is empty; remote stop was skipped")
+
+        self.terminate_tracked_process("robot_process", "Robot terminal")
+        self.robot_process = None
+        self.terminate_tracked_process("camera_process", "Camera terminal")
+        self.camera_process = None
+
+        print("Robot Bring Up processes stopped")
+
+    def stop_tracer_bringup(self):
+        print("Stopping Tracer Bring Up processes...")
+
+        self.signal_local_launch_process(
+            "[r]os2 launch motion_tracer_ros2 tracer_bringup.launch.py",
+            "Tracer"
+        )
+        self.terminate_tracked_process("tracer_process", "Tracer terminal")
+        self.tracer_process = None
+        msg = Bool()
+        msg.data = False
+        self.robot_node.notify_on_Tracer_callback(msg)
+        print("Tracer Bring Up processes stopped")
+
+    def on_robot_bringup_release(self, event):
+        self.on_robot_bringup_click()
+
+    def on_robot_bringup_click(self):
+        with self.process_lock:
+            if self.finish_requested:
+                return
+
+        if not self.robot_restart_lock.acquire(blocking=False):
+            print("Robot Bring Up restart is already running")
+            return
+
+        ssh_target = self.robot_ssh_target_entry.get().strip()
+        ssh_password = self.robot_ssh_password_entry.get()
+
+        try:
+            threading.Thread(
+                target=self.restart_robot_bringup,
+                args=(ssh_target, ssh_password),
+                daemon=True
+            ).start()
+        except Exception:
+            self.robot_restart_lock.release()
+            raise
+        print("Clicked Robot Bring Up Button")
+
+    def restart_robot_bringup(self, ssh_target, ssh_password):
+        try:
+            if self.is_finish_requested():
+                return
+            self.stop_robot_bringup(ssh_target, ssh_password)
+            if self.is_finish_requested():
+                return
+            self.start_robot_bringup(ssh_target, ssh_password)
+        finally:
+            self.robot_restart_lock.release()
+
+    def start_robot_bringup(self, ssh_target, ssh_password):
+        if not self.check_ssh_connection(ssh_target, ssh_password):
+            print("ERROR : SSH connection failed")
             return
 
         if self.is_finish_requested():
@@ -963,7 +1153,7 @@ class MainGUI(ctk.CTk):
         quoted_password = shlex.quote(ssh_password)
         quoted_target = shlex.quote(ssh_target)
 
-        self.camera_process = subprocess.Popen(
+        camera_process = subprocess.Popen(
             [
                 "gnome-terminal",
                 "--",
@@ -981,11 +1171,14 @@ class MainGUI(ctk.CTk):
             ],
             preexec_fn=os.setsid
         )
+        with self.process_lock:
+            self.camera_process = camera_process
 
         if self.is_finish_requested():
+            self.stop_robot_bringup(ssh_target, ssh_password)
             return
 
-        self.robot_process = subprocess.Popen(
+        robot_process = subprocess.Popen(
             [
                 "gnome-terminal",
                 "--",
@@ -1003,12 +1196,19 @@ class MainGUI(ctk.CTk):
             ],
             preexec_fn=os.setsid
         )
+        with self.process_lock:
+            self.robot_process = robot_process
 
         if not self.wait_for_robot_current_service(timeout_sec=15):
-            print("ERROR : /aero_controller/set_current service is not available")
+            if self.is_finish_requested():
+                print("Robot Bring Up was cancelled")
+            else:
+                print("ERROR : /aero_controller/set_current service is not available")
+            self.stop_robot_bringup(ssh_target, ssh_password)
             return
 
         if self.is_finish_requested():
+            self.stop_robot_bringup(ssh_target, ssh_password)
             return
 
         self.call_left_hand_current_service(self.left_current_percent)
@@ -1023,16 +1223,35 @@ class MainGUI(ctk.CTk):
             if self.finish_requested:
                 return
 
-        threading.Thread(
-            target=self.start_tracer_bringup,
-            daemon=True
-        ).start()
+        if not self.tracer_restart_lock.acquire(blocking=False):
+            print("Tracer Bring Up restart is already running")
+            return
+
+        try:
+            threading.Thread(
+                target=self.restart_tracer_bringup,
+                daemon=True
+            ).start()
+        except Exception:
+            self.tracer_restart_lock.release()
+            raise
         print("Clicked Tracer Bring Up Button")
+
+    def restart_tracer_bringup(self):
+            try:
+                if self.is_finish_requested():
+                    return
+                self.stop_tracer_bringup()
+                if self.is_finish_requested():
+                    return
+                self.start_tracer_bringup()
+            finally:
+                self.tracer_restart_lock.release()
 
     def start_tracer_bringup(self):
         if self.is_finish_requested():
             return
-        self.tracer_process = subprocess.Popen(
+        tracer_process = subprocess.Popen(
             [
                 "gnome-terminal",
                 "--",
@@ -1045,6 +1264,11 @@ class MainGUI(ctk.CTk):
             ],
             preexec_fn=os.setsid
         )
+        with self.process_lock:
+            self.tracer_process = tracer_process
+        if self.is_finish_requested():
+            self.stop_tracer_bringup()
+            return
         print("Tracer System Bring Up")
 
     def is_finish_requested(self):
@@ -1063,103 +1287,27 @@ class MainGUI(ctk.CTk):
 
     def finish_all(self):
         with self.process_lock:
+            if self.camera_process is not None or self.robot_process is not None or self.tracer_process is not None:
+                if self.finish_requested:
+                    print("All Finish is already running")
+                    return
+            else:
+                return;
             self.finish_requested = True
 
         ssh_target = self.robot_ssh_target_entry.get().strip()
         ssh_password = self.robot_ssh_password_entry.get()
 
-        subprocess.run(
-            [
-                "killall",
-                "-SIGINT",
-                "ros2"
-            ]
-        )
-
-        ok_ssh = True
+        self.robot_restart_lock.acquire()
+        self.tracer_restart_lock.acquire()
         try:
-            result = subprocess.run(
-                [
-                    "sshpass",
-                    "-p",
-                    ssh_password,
-                    "ssh",
-                    "-o",
-                    "ConnectTimeout=1",
-                    "-o",
-                    "StrictHostKeyChecking=no",
-                    ssh_target,
-                    "echo connected"
-                ],
-                capture_output=True,
-                text=True,
-                timeout=3
-            )
-
-            if result.returncode != 0:
-                ok_ssh = False
-                print("ERROR : SSH connection failed")
-                print(result.stderr)
-
-        except Exception as e:
-            ok_ssh = False
-            print(f"ERROR : SSH connection exception : {e}")
-
-        if ok_ssh:
-            try:
-                subprocess.run(
-                    [
-                        "sshpass",
-                        "-p",
-                        ssh_password,
-                        "ssh",
-                        "-o",
-                        "StrictHostKeyChecking=no",
-                        ssh_target,
-                        "killall -SIGINT "
-                        "ros2 "
-                        "ros2_control_node "
-                        "robot_state_publisher "
-                        "rviz2 urg_node2_node "
-                        "scan_to_scan_filter_chain "
-                        "init_pose_pub "
-                        "static_transform_publisher "
-                        "component_container "
-                        "joy_linux_node "
-                        "upper_controller_node "
-                        "lower_controller_node "
-                        "move_group"
-                    ]
-                )
-            except Exception as e:
-                print(f"ERROR : ROS process kill exception : {e}")
-        time.sleep(1)
-
-        if self.tracer_process is not None:
-            try:
-                self.tracer_process.terminate()
-                self.tracer_process.wait(timeout=1)
-            except subprocess.TimeoutExpired:
-                self.tracer_process.kill()
-            self.tracer_process = None
-
-        if self.robot_process is not None:
-            try:
-                self.robot_process.terminate()
-                self.robot_process.wait(timeout=1)
-            except subprocess.TimeoutExpired:
-                self.robot_process.kill()
-            self.robot_process = None
-
-        if self.camera_process is not None:
-            try:
-                self.camera_process.terminate()
-                self.camera_process.wait(timeout=1)
-            except subprocess.TimeoutExpired:
-                self.camera_process.kill()
-            self.camera_process = None
-
-        self.finish_requested = False
+            self.stop_tracer_bringup()
+            self.stop_robot_bringup(ssh_target, ssh_password)
+        finally:
+            self.tracer_restart_lock.release()
+            self.robot_restart_lock.release()
+            with self.process_lock:
+                self.finish_requested = False
         print("All System Finished")
 
     def on_left_slider_change(self, slider_value):
