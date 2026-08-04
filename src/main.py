@@ -671,6 +671,9 @@ class MainGUI(ctk.CTk):
         self.finish_requested = False
         self.process_lock = threading.Lock()
 
+        self.has_robot_process = False
+        self.has_tracer_process = False
+
         self.robot_restart_lock = threading.Lock()
         self.tracer_restart_lock = threading.Lock()
 
@@ -1085,10 +1088,9 @@ class MainGUI(ctk.CTk):
             print("WARN : Robot SSH target is empty; remote stop was skipped")
 
         self.terminate_tracked_process("robot_process", "Robot terminal")
-        self.robot_process = None
         self.terminate_tracked_process("camera_process", "Camera terminal")
-        self.camera_process = None
-
+        with self.process_lock:
+            self.has_robot_process = False
         print("Robot Bring Up processes stopped")
 
     def stop_tracer_bringup(self):
@@ -1099,10 +1101,11 @@ class MainGUI(ctk.CTk):
             "Tracer"
         )
         self.terminate_tracked_process("tracer_process", "Tracer terminal")
-        self.tracer_process = None
         msg = Bool()
         msg.data = False
         self.robot_node.notify_on_Tracer_callback(msg)
+        with self.process_lock:
+            self.has_tracer_process = False
         print("Tracer Bring Up processes stopped")
 
     def on_robot_bringup_release(self, event):
@@ -1198,6 +1201,7 @@ class MainGUI(ctk.CTk):
         )
         with self.process_lock:
             self.robot_process = robot_process
+            self.has_robot_process = True
 
         if not self.wait_for_robot_current_service(timeout_sec=15):
             if self.is_finish_requested():
@@ -1266,6 +1270,7 @@ class MainGUI(ctk.CTk):
         )
         with self.process_lock:
             self.tracer_process = tracer_process
+            self.has_tracer_process = True
         if self.is_finish_requested():
             self.stop_tracer_bringup()
             return
@@ -1287,7 +1292,7 @@ class MainGUI(ctk.CTk):
 
     def finish_all(self):
         with self.process_lock:
-            if self.camera_process is not None or self.robot_process is not None or self.tracer_process is not None:
+            if self.has_robot_process or self.has_tracer_process:
                 if self.finish_requested:
                     print("All Finish is already running")
                     return
@@ -1435,7 +1440,7 @@ class MainGUI(ctk.CTk):
             version = self.robot_node.cur_onoff_version
         if version != self.last_onoff_version:
             if cur_onoff:
-                onoff_text = "Trcaer  [ ON ]"
+                onoff_text = "Tracer  [ ON ]"
             else:
                 onoff_text = "Tracer  [ OFF ]"
             self.onoff_label.configure(text=onoff_text)
