@@ -292,7 +292,7 @@ class RobotSubscriber(Node):
         msg.data = bool(enabled)
         self.force_feedback_publisher.publish(msg)
 
-    def notify_lifter_forward_lean(self, enabled):
+    def notify_lifter_forward_lean(self, enabled = False):
         msg = Bool()
         msg.data = bool(enabled)
         self.lifter_forward_lean_publisher.publish(msg)
@@ -857,13 +857,14 @@ class MainGUI(ctk.CTk):
         self.force_feedback_switch.grid(row=1, column=0)
         self.force_feedback_switch.select()
 
-        lifter_forward_lean_frame = ctk.CTkFrame(switch_frame)
-        lifter_forward_lean_frame.grid(row=0, column=1, padx=5, pady=5, sticky="")
-        lifter_forward_lean_label = ctk.CTkLabel(lifter_forward_lean_frame, text="Lifter Forward Lean")
-        lifter_forward_lean_label.grid(row=0, column=0)
-        self.lifter_forward_lean_switch = ctk.CTkSwitch(lifter_forward_lean_frame, text="OFF", command=self.on_lifter_forward_lean_toggle, onvalue=True, offvalue=False, width=80)
-        self.lifter_forward_lean_switch.grid(row=1, column=0)
-        self.lifter_forward_lean_switch.deselect()
+        # The function is hidden due to the risk of the robot falling over.
+        # lifter_forward_lean_frame = ctk.CTkFrame(switch_frame)
+        # lifter_forward_lean_frame.grid(row=0, column=1, padx=5, pady=5, sticky="")
+        # lifter_forward_lean_label = ctk.CTkLabel(lifter_forward_lean_frame, text="Lifter Forward Lean")
+        # lifter_forward_lean_label.grid(row=0, column=0)
+        # self.lifter_forward_lean_switch = ctk.CTkSwitch(lifter_forward_lean_frame, text="OFF", command=self.on_lifter_forward_lean_toggle, onvalue=True, offvalue=False, width=80)
+        # self.lifter_forward_lean_switch.grid(row=1, column=0)
+        # self.lifter_forward_lean_switch.deselect()
 
         assisted_teleop_frame = ctk.CTkFrame(switch_frame)
         assisted_teleop_frame.grid(row=0, column=2, padx=5, pady=5, sticky="")
