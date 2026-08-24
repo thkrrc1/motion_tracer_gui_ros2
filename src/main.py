@@ -7,7 +7,6 @@ import cv2
 
 import rclpy
 from rclpy.node import Node
-# from sensor_msgs.msg import Image as RosImage
 from sensor_msgs.msg import CompressedImage as RosImage
 import numpy as np
 from rclpy.qos import qos_profile_sensor_data
@@ -16,7 +15,7 @@ from std_msgs.msg import Bool
 from rclpy.qos import QoSProfile, HistoryPolicy, ReliabilityPolicy, DurabilityPolicy
 from rclpy.context import Context
 
-from sensor_msgs.msg import JointState
+from sensor_msgs.msg import JointState, LaserScan, Range
 from tf2_ros import Buffer
 from tf2_ros import TransformListener
 import pinocchio as pin
@@ -41,6 +40,12 @@ image_qos = QoSProfile(
     depth=1,
     reliability=ReliabilityPolicy.BEST_EFFORT,
     durability=DurabilityPolicy.VOLATILE,
+)
+notify_qos = QoSProfile(
+    history=HistoryPolicy.KEEP_LAST,
+    depth=1,
+    reliability=ReliabilityPolicy.RELIABLE,
+    durability=DurabilityPolicy.TRANSIENT_LOCAL,
 )
 CAMERA_DOMAIN_ID = 10
 ROBOT_DOMAIN_ID = 20
@@ -89,7 +94,6 @@ class CameraSubscriber(Node):
         )
 
     def image_callback(self, msg, cam_name):
-        # self.get_logger().info(f"{cam_name} frame received")
         try:
             np_arr = np.frombuffer(msg.data, np.uint8)
             cv_img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
@@ -109,6 +113,8 @@ class RobotSubscriber(Node):
 
         self.lock = threading.Lock()
         self.notify_lock = threading.Lock()
+        self.tof_lock = threading.Lock()
+        self.tk_lock = threading.Lock()
 
         self.cur_mode = False
         self.cur_mode_version = 0
@@ -120,6 +126,13 @@ class RobotSubscriber(Node):
         self.urdf_joints = {}
         self.current_name_to_pos = {}
 
+        self.right_tof_range = None
+        self.left_tof_range = None
+        self.tof_version = 0
+
+        self.tk_range = None
+        self.tk_version = 0
+
         self.create_subscription(
             JointState,
             '/joint_states',
@@ -127,11 +140,18 @@ class RobotSubscriber(Node):
             qos_profile_sensor_data
         )
 
-        notify_qos = QoSProfile(
-            history=HistoryPolicy.KEEP_LAST,
-            depth=1,
-            reliability=ReliabilityPolicy.RELIABLE,
-            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        self.create_subscription(
+            LaserScan,
+            '/tof_sensor/scan_raw',
+            self.tof_callback,
+            qos_profile_sensor_data
+        )
+
+        self.create_subscription(
+            Range,
+            '/scan_prox/range',
+            self.tk_callback,
+            qos_profile_sensor_data
         )
 
         self.create_subscription(
@@ -166,8 +186,9 @@ class RobotSubscriber(Node):
             notify_qos
         )
 
+        home_str = str(Path.home())
         urdf_path = (
-            "/home/seed/ros2/jazzy/src/seed_robot_ros2_pkg/robots/noid_lifter_mover/model/noid_lifter_mover.urdf"
+            f"{home_str}/ros2/jazzy/src/seed_robot_ros2_pkg/robots/noid_lifter_mover/model/noid_lifter_mover.urdf"
         )
         self.model = pin.buildModelFromUrdf(
             urdf_path
@@ -224,6 +245,31 @@ class RobotSubscriber(Node):
                 name: pos for name, pos in zip(msg.name, msg.position)
             }
             self.joint_state_count += 1
+
+    def tof_callback(self, msg):
+        right_value = None
+        left_value = None
+        if len(msg.ranges) > 0:
+            value = float(msg.ranges[0])
+            if np.isfinite(value) and value < msg.range_max:
+                right_value = value / 1000
+        if len(msg.ranges) > 1:
+            value = float(msg.ranges[1])
+            if np.isfinite(value) and value < msg.range_max:
+                left_value = value / 1000
+        with self.tof_lock:
+            self.right_tof_range = right_value
+            self.left_tof_range = left_value
+            self.tof_version += 1
+
+    def tk_callback(self, msg):
+        tk_value = None
+        value = float(msg.range)
+        if np.isfinite(value) and value < msg.max_range:
+            tk_value = value
+        with self.tk_lock:
+            self.tk_range = tk_value
+            self.tk_version += 1
 
     def notify_Tracer_mode_callback(self, msg):
         with self.notify_lock:
@@ -602,11 +648,11 @@ class SkeletonViewer(OpenGLFrame):
         gluLookAt(
             -1.0,
             -1.5,
-            1.5,
+            1.6,
 
             0.3,
             0.2,
-            0.8,
+            0.9,
 
             0,
             0,
@@ -679,7 +725,6 @@ class MainGUI(ctk.CTk):
 
         self.title("MotionTracerGUI ROS2")
         self.geometry("1920x1080")
-        # self.attributes('-fullscreen',True)
         self.after(0,lambda:self.attributes('-zoomed',True))
 
         ctk.set_appearance_mode("Dark")
@@ -749,19 +794,19 @@ class MainGUI(ctk.CTk):
         operation_frame.grid_columnconfigure(0, weight=1)
 
         ssh_config_frame = ctk.CTkFrame(operation_frame)
-        ssh_config_frame.grid(row=0, column=0, sticky="ew", padx=10, pady=5)
+        ssh_config_frame.grid(row=0, column=0, sticky="ew", padx=5, pady=5)
         ssh_config_frame.grid_columnconfigure(1, weight=1)
         ssh_config_frame.grid_columnconfigure(3, weight=1)
 
         ssh_target_label = ctk.CTkLabel(ssh_config_frame, text="Connect to [user@host]:")
         ssh_target_label.grid(row=0, column=0, padx=5, pady=5)
-        self.robot_ssh_target_entry = ctk.CTkEntry(ssh_config_frame, width=220)
+        self.robot_ssh_target_entry = ctk.CTkEntry(ssh_config_frame, width=160)
         self.robot_ssh_target_entry.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
         self.robot_ssh_target_entry.insert(0, self.ssh_config["robot_ssh_target"])
 
         ssh_password_label = ctk.CTkLabel(ssh_config_frame, text="password:")
         ssh_password_label.grid(row=0, column=2, padx=5, pady=5)
-        self.robot_ssh_password_entry = ctk.CTkEntry(ssh_config_frame, width=180,show="*")
+        self.robot_ssh_password_entry = ctk.CTkEntry(ssh_config_frame, width=160,show="*")
         self.robot_ssh_password_entry.grid(row=0, column=3, padx=5, pady=5, sticky="ew")
         self.robot_ssh_password_entry.insert(0, self.ssh_config["robot_ssh_password"])
 
@@ -806,7 +851,7 @@ class MainGUI(ctk.CTk):
 
         force_feedback_frame = ctk.CTkFrame(switch_frame)
         force_feedback_frame.grid(row=0, column=0, padx=5, pady=5, sticky="")
-        force_feedback_label = ctk.CTkLabel(force_feedback_frame, text="force feedback")
+        force_feedback_label = ctk.CTkLabel(force_feedback_frame, text="Force Feedback")
         force_feedback_label.grid(row=0, column=0)
         self.force_feedback_switch = ctk.CTkSwitch(force_feedback_frame, text="ON", command=self.on_force_feedback_toggle, onvalue=True, offvalue=False, width=80)
         self.force_feedback_switch.grid(row=1, column=0)
@@ -814,7 +859,7 @@ class MainGUI(ctk.CTk):
 
         lifter_forward_lean_frame = ctk.CTkFrame(switch_frame)
         lifter_forward_lean_frame.grid(row=0, column=1, padx=5, pady=5, sticky="")
-        lifter_forward_lean_label = ctk.CTkLabel(lifter_forward_lean_frame, text="lifter forward lean")
+        lifter_forward_lean_label = ctk.CTkLabel(lifter_forward_lean_frame, text="Lifter Forward Lean")
         lifter_forward_lean_label.grid(row=0, column=0)
         self.lifter_forward_lean_switch = ctk.CTkSwitch(lifter_forward_lean_frame, text="OFF", command=self.on_lifter_forward_lean_toggle, onvalue=True, offvalue=False, width=80)
         self.lifter_forward_lean_switch.grid(row=1, column=0)
@@ -822,28 +867,60 @@ class MainGUI(ctk.CTk):
 
         assisted_teleop_frame = ctk.CTkFrame(switch_frame)
         assisted_teleop_frame.grid(row=0, column=2, padx=5, pady=5, sticky="")
-        assisted_teleop_label = ctk.CTkLabel(assisted_teleop_frame, text="assisted teleop")
+        assisted_teleop_label = ctk.CTkLabel(assisted_teleop_frame, text="Assisted Teleop")
         assisted_teleop_label.grid(row=0, column=0)
         self.assisted_teleop_switch = ctk.CTkSwitch(assisted_teleop_frame, text="OFF", command=self.on_assisted_teleop_toggle, onvalue=True, offvalue=False, width=80)
         self.assisted_teleop_switch.grid(row=1, column=0)
         self.assisted_teleop_switch.deselect()
 
-        onoff_frame = ctk.CTkFrame(operation_frame)
-        onoff_frame.grid(row=4, column=0, pady=5, sticky="nsew")
+        device_status_frame1 = ctk.CTkFrame(operation_frame)
+        device_status_frame1.grid(row=4, column=0, pady=5, sticky="nsew")
+        device_status_frame1.grid_columnconfigure(0, weight=1)
+        device_status_frame1.grid_columnconfigure(1, weight=2)
+        device_status_frame1.grid_columnconfigure(2, weight=1)
+
+        tk_frame_dummy = ctk.CTkFrame(device_status_frame1)
+        tk_frame_dummy.grid(row=0, column=0, padx=(2, 5), sticky="nsew")
+        self.tk_label_dummy = ctk.CTkLabel(tk_frame_dummy, text="Left Thinker [m]\n---", font=ctk.CTkFont(size=15, weight="bold"))
+        self.tk_label_dummy.pack(padx=10, pady=10)
+        onoff_frame = ctk.CTkFrame(device_status_frame1)
+        onoff_frame.grid(row=0, column=1, pady=5, sticky="nsew")
         self.onoff_label = ctk.CTkLabel(onoff_frame, text="Tracer ON,OFF : ---", font=ctk.CTkFont(size=28, weight="bold"))
         self.onoff_label.pack(padx=10, pady=15)
         self.last_onoff_version = -1
+        tk_frame = ctk.CTkFrame(device_status_frame1)
+        tk_frame.grid(row=0, column=2, padx=(2, 5), sticky="nsew")
+        self.tk_label = ctk.CTkLabel(tk_frame, text="Right Thinker [m]\n---", font=ctk.CTkFont(size=15, weight="bold"))
+        self.tk_label.pack(padx=10, pady=10)
+        self.last_tk_version = -1
 
-        mode_frame = ctk.CTkFrame(operation_frame)
-        mode_frame.grid(row=5, column=0, pady=5, sticky="nsew")
+        device_status_frame2 = ctk.CTkFrame(operation_frame)
+        device_status_frame2.grid(row=5, column=0, pady=5, sticky="nsew")
+        device_status_frame2.grid_columnconfigure(0, weight=1)
+        device_status_frame2.grid_columnconfigure(1, weight=2)
+        device_status_frame2.grid_columnconfigure(2, weight=1)
+
+        left_tof_frame = ctk.CTkFrame(device_status_frame2)
+        left_tof_frame.grid(row=0, column=0, padx=(5, 2), sticky="nsew")
+        self.left_tof_label = ctk.CTkLabel(left_tof_frame, text="Left ToF [m]\n---", font=ctk.CTkFont(size=15, weight="bold"))
+        self.left_tof_label.pack(padx=10, pady=10)
+        mode_frame = ctk.CTkFrame(device_status_frame2)
+        mode_frame.grid(row=0, column=1, padx=2, sticky="nsew")
         self.mode_label = ctk.CTkLabel(mode_frame, text="Mode : ---", font=ctk.CTkFont(size=28, weight="bold"))
         self.mode_label.pack(padx=10, pady=15)
         self.last_mode_version = -1
+        right_tof_frame = ctk.CTkFrame(device_status_frame2)
+        right_tof_frame.grid(row=0, column=2, padx=(2, 5), sticky="nsew")
+        self.right_tof_label = ctk.CTkLabel(right_tof_frame, text="Right ToF [m]\n---", font=ctk.CTkFont(size=15, weight="bold"))
+        self.right_tof_label.pack(padx=10, pady=10)
+        self.last_tof_version = -1
 
         self.update_images()
         self.after(50, self.update_skeleton)
         self.update_onoff_label()
         self.update_mode_label()
+        self.update_tof_labels()
+        self.update_tk_label()
 
         self.protocol("WM_DELETE_WINDOW", self.on_close)
 
@@ -1459,6 +1536,29 @@ class MainGUI(ctk.CTk):
             self.mode_label.configure(text=mode_text)
             self.last_mode_version = version
         self.after(50, self.update_mode_label)
+
+    def update_tof_labels(self):
+        with self.robot_node.tof_lock:
+            left_value = self.robot_node.left_tof_range
+            right_value = self.robot_node.right_tof_range
+            version = self.robot_node.tof_version
+        if version != self.last_tof_version:
+            left_text = "---" if left_value is None else f"{left_value:.3f}"
+            right_text = "---" if right_value is None else f"{right_value:.3f}"
+            self.left_tof_label.configure(text=f"Left ToF [m]\n{left_text}")
+            self.right_tof_label.configure(text=f"Right ToF [m]\n{right_text}")
+            self.last_tof_version = version
+        self.after(50, self.update_tof_labels)
+
+    def update_tk_label(self):
+        with self.robot_node.tk_lock:
+            tk_value = self.robot_node.tk_range
+            version = self.robot_node.tk_version
+        if version != self.last_tk_version:
+            tk_text = "---" if tk_value is None else f"{tk_value:.3f}"
+            self.tk_label.configure(text=f"Right Thinker [m]\n{tk_text}")
+            self.last_tk_version = version
+        self.after(50, self.update_tk_label)
 
     def on_close(self):
         self.save_ssh_config()
