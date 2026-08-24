@@ -1510,7 +1510,7 @@ class MainGUI(ctk.CTk):
                 self.last_image_versions[cam] = version
             except Exception as e:
                 print(f"Failed to update image {cam}: {e}")
-        self.after(50, self.update_images)
+        self.after(100, self.update_images)
 
     def update_onoff_label(self):
         with self.robot_node.notify_lock:
