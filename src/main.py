@@ -15,7 +15,7 @@ from std_msgs.msg import Bool
 from rclpy.qos import QoSProfile, HistoryPolicy, ReliabilityPolicy, DurabilityPolicy
 from rclpy.context import Context
 
-from sensor_msgs.msg import JointState, LaserScan, Range
+from sensor_msgs.msg import JointState, LaserScan
 from tf2_ros import Buffer
 from tf2_ros import TransformListener
 import pinocchio as pin
@@ -114,7 +114,6 @@ class RobotSubscriber(Node):
         self.lock = threading.Lock()
         self.notify_lock = threading.Lock()
         self.tof_lock = threading.Lock()
-        self.tk_lock = threading.Lock()
 
         self.cur_mode = False
         self.cur_mode_version = 0
@@ -130,9 +129,6 @@ class RobotSubscriber(Node):
         self.left_tof_range = None
         self.tof_version = 0
 
-        self.tk_range = None
-        self.tk_version = 0
-
         self.create_subscription(
             JointState,
             '/joint_states',
@@ -144,13 +140,6 @@ class RobotSubscriber(Node):
             LaserScan,
             '/tof_sensor/scan_raw',
             self.tof_callback,
-            qos_profile_sensor_data
-        )
-
-        self.create_subscription(
-            Range,
-            '/scan_prox/range',
-            self.tk_callback,
             qos_profile_sensor_data
         )
 
@@ -261,15 +250,6 @@ class RobotSubscriber(Node):
             self.right_tof_range = right_value
             self.left_tof_range = left_value
             self.tof_version += 1
-
-    def tk_callback(self, msg):
-        tk_value = None
-        value = float(msg.range)
-        if np.isfinite(value) and value < msg.max_range:
-            tk_value = value
-        with self.tk_lock:
-            self.tk_range = tk_value
-            self.tk_version += 1
 
     def notify_Tracer_mode_callback(self, msg):
         with self.notify_lock:
@@ -880,20 +860,11 @@ class MainGUI(ctk.CTk):
         device_status_frame1.grid_columnconfigure(1, weight=2)
         device_status_frame1.grid_columnconfigure(2, weight=1)
 
-        tk_frame_dummy = ctk.CTkFrame(device_status_frame1)
-        tk_frame_dummy.grid(row=0, column=0, padx=(2, 5), sticky="nsew")
-        self.tk_label_dummy = ctk.CTkLabel(tk_frame_dummy, text="Left Thinker [m]\n---", font=ctk.CTkFont(size=15, weight="bold"))
-        self.tk_label_dummy.pack(padx=10, pady=10)
         onoff_frame = ctk.CTkFrame(device_status_frame1)
         onoff_frame.grid(row=0, column=1, pady=5, sticky="nsew")
         self.onoff_label = ctk.CTkLabel(onoff_frame, text="Tracer ON,OFF : ---", font=ctk.CTkFont(size=28, weight="bold"))
         self.onoff_label.pack(padx=10, pady=15)
         self.last_onoff_version = -1
-        tk_frame = ctk.CTkFrame(device_status_frame1)
-        tk_frame.grid(row=0, column=2, padx=(2, 5), sticky="nsew")
-        self.tk_label = ctk.CTkLabel(tk_frame, text="Right Thinker [m]\n---", font=ctk.CTkFont(size=15, weight="bold"))
-        self.tk_label.pack(padx=10, pady=10)
-        self.last_tk_version = -1
 
         device_status_frame2 = ctk.CTkFrame(operation_frame)
         device_status_frame2.grid(row=5, column=0, pady=5, sticky="nsew")
@@ -921,7 +892,6 @@ class MainGUI(ctk.CTk):
         self.update_onoff_label()
         self.update_mode_label()
         self.update_tof_labels()
-        self.update_tk_label()
 
         self.protocol("WM_DELETE_WINDOW", self.on_close)
 
@@ -1550,16 +1520,6 @@ class MainGUI(ctk.CTk):
             self.right_tof_label.configure(text=f"Right ToF [m]\n{right_text}")
             self.last_tof_version = version
         self.after(50, self.update_tof_labels)
-
-    def update_tk_label(self):
-        with self.robot_node.tk_lock:
-            tk_value = self.robot_node.tk_range
-            version = self.robot_node.tk_version
-        if version != self.last_tk_version:
-            tk_text = "---" if tk_value is None else f"{tk_value:.3f}"
-            self.tk_label.configure(text=f"Right Thinker [m]\n{tk_text}")
-            self.last_tk_version = version
-        self.after(50, self.update_tk_label)
 
     def on_close(self):
         self.save_ssh_config()
