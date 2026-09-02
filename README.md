@@ -1,7 +1,7 @@
 # motion_tracer_gui_ros2
 PythonのCustomTkinterを使用した簡易的なGUI
 ## 1.関連PKGインストール
-1. [motion_tracer_ros2](https://github.com/thkrrc1/motion_tracer_ros2/tree/airoa)のREADMEに従ってプロジェクトをクローンする。
+1. [motion_tracer_ros2](https://github.com/thkrrc1/motion_tracer_ros2/tree/airoa)、[usb_cam_custom](https://github.com/thkrrc1/usb_cam_custom)のREADMEに従ってリーダーデバイスPC、フォロワーデバイスPCにプロジェクトをクローンする。
 
 2. リーダーデバイスPCのhome直下にて、motion_tracer_gui_ros2をクローンする。(homeディレクトリ：/home/seed/ の前提)
 
@@ -41,3 +41,5 @@ pip install numpy<2
 ```
 
 **※ROS2のNode同士の通信が失敗する恐れがあるため、GUI実行中にネットワークの経由方法が変更された場合（ex. 無線LANから有線LANなど）は、GUIを起動し直してください。**
+
+詳細な操作方法に関しては別途ドキュメントにて解説。
